@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+benchmarks/results/*.json
+benchmarks/data_cache/
+.pytest_cache/
+catboost_info/
+
+# macOS
+.DS_Store
+._*
