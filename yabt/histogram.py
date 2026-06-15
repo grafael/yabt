@@ -6,6 +6,8 @@ import torch
 
 from .binning import MAX_BINS
 
+_NEG_INF = float("-inf")
+
 
 def build_histogram(
     binned: torch.Tensor,  # (n, F) uint8, rows of one leaf
@@ -26,7 +28,10 @@ def build_histogram(
     hist = torch.zeros(3, F * B, dtype=torch.float32, device=dev)
     hist[0].scatter_add_(0, flat, grad.unsqueeze(1).expand(n, F).reshape(-1))
     hist[1].scatter_add_(0, flat, hess.unsqueeze(1).expand(n, F).reshape(-1))
-    hist[2].scatter_add_(0, flat, torch.ones(n * F, dtype=torch.float32, device=dev))
+    # Count channel scatters a value of 1 per element; an expanded scalar avoids
+    # materializing an (n*F,) ones tensor on every leaf's histogram build.
+    ones = torch.ones((), dtype=torch.float32, device=dev).expand(n * F)
+    hist[2].scatter_add_(0, flat, ones)
 
     return hist.view(3, F, B)
 
@@ -77,10 +82,13 @@ def find_best_split(
     leaf-priority ordering are never inflated by the steering signal.
     """
     gain, valid = _split_gain_matrix(hist, lam, min_child_weight, min_samples_leaf)
-    gain = gain - gamma
+    if gamma:
+        gain -= gamma
     if feature_mask is not None:
         valid &= feature_mask.unsqueeze(1)
-    gain = torch.where(valid, gain, torch.tensor(float("-inf"), device=gain.device))
+    # In-place mask write avoids both an extra full-matrix allocation and the
+    # per-call scalar tensor that torch.where(..., tensor(-inf)) created.
+    gain.masked_fill_(~valid, _NEG_INF)
 
     sel = gain if feature_boost is None else gain * feature_boost.unsqueeze(1)
     flat_idx = int(sel.reshape(-1).argmax())
@@ -119,7 +127,8 @@ def build_histogram_multi(
     for t in range(T):
         hist[t].scatter_add_(0, flat, grad[:, t].unsqueeze(1).expand(n, F).reshape(-1))
         hist[T + t].scatter_add_(0, flat, hess[:, t].unsqueeze(1).expand(n, F).reshape(-1))
-    hist[2 * T].scatter_add_(0, flat, torch.ones(n * F, dtype=torch.float32, device=dev))
+    ones = torch.ones((), dtype=torch.float32, device=dev).expand(n * F)
+    hist[2 * T].scatter_add_(0, flat, ones)
     return hist.view(2 * T + 1, F, B)
 
 
@@ -163,7 +172,7 @@ def find_best_split_multi(
     valid[:, -1] = False
     if feature_mask is not None:
         valid &= feature_mask.unsqueeze(1)
-    total_gain = torch.where(valid, total_gain, torch.tensor(float("-inf"), device=hist.device))
+    total_gain.masked_fill_(~valid, _NEG_INF)
 
     flat_idx = int(total_gain.reshape(-1).argmax())
     F, B = total_gain.shape

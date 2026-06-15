@@ -79,12 +79,16 @@ class Tree:
     def apply(self, X: torch.Tensor) -> torch.Tensor:
         """Leaf (node) index per row of raw feature matrix X (n, F)."""
         n = X.shape[0]
+        # Route leaves to themselves so a settled row is a fixed point of the
+        # update: this drops the per-level `torch.where(is_leaf, ...)` re-mask and
+        # its host sync, leaving a single where in the (depth-bounded) loop.
+        is_leaf = self.feature == LEAF
+        self_idx = torch.arange(self.feature.shape[0], device=X.device)
+        left_safe = torch.where(is_leaf, self_idx, self.left)
+        right_safe = torch.where(is_leaf, self_idx, self.right)
         node = torch.zeros(n, dtype=torch.long, device=X.device)
         for _ in range(self.depth):
             f = self.feature[node]
-            lf = f == LEAF
-            if bool(lf.all()):
-                break
             fc = f.clamp(min=0)
             go_left = X.gather(1, fc.unsqueeze(1)).squeeze(1) <= self.threshold[node]
             if self.kernel_id is not None:
@@ -93,8 +97,7 @@ class Tree:
                     kid = self.kernel_id[node[km]]
                     d2 = ((X[km] - self.kernel_centers[kid]).square() * self.kernel_prec[kid]).sum(1)
                     go_left[km] = torch.exp(-d2) <= self.threshold[node[km]]
-            nxt = torch.where(go_left, self.left[node], self.right[node])
-            node = torch.where(lf, node, nxt)
+            node = torch.where(go_left, left_safe[node], right_safe[node])
         return node
 
     def net_contribution(self, X: torch.Tensor, node: torch.Tensor) -> torch.Tensor:
@@ -396,7 +399,8 @@ def grow_tree_levelwise(
         out = torch.zeros(3, K * F * B, dtype=torch.float32, device=dev)
         out[0].scatter_add_(0, flat, grows[:, None].expand(nr, F).reshape(-1))
         out[1].scatter_add_(0, flat, hrows[:, None].expand(nr, F).reshape(-1))
-        out[2].scatter_add_(0, flat, torch.ones(nr * F, dtype=torch.float32, device=dev))
+        ones = torch.ones((), dtype=torch.float32, device=dev).expand(nr * F)
+        out[2].scatter_add_(0, flat, ones)
         return out.view(3, K, F, B)
 
     feature: list[int] = []
