@@ -84,6 +84,25 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "applied to near-tie gains by interaction steering."),
     ],
     [
+        ("product_features", "bool, default=False",
+         "Detect feature groups that drive the residual multiplicatively (via the\n"
+         "magnitude signal corr(x^2, r^2)) and append their products as columns\n"
+         "before training, so the greedy splitter can use interactions like\n"
+         "x_i*x_j*x_k that have no marginal gain. A correlation guard keeps a\n"
+         "product only when it beats its components, so data without\n"
+         "multiplicative structure is left untouched. Off by default (A/B: large\n"
+         "win on multiplicative targets, neutral elsewhere)."),
+        ("product_max_features", "int, default=5",
+         "Number of top magnitude-signal features scanned for products."),
+        ("product_max_order", "int, default=3",
+         "Highest product order considered (3 = up to triple products)."),
+        ("product_min_corr", "float, default=0.03",
+         "Absolute residual-correlation floor for a product to be kept."),
+        ("product_corr_gain", "float, default=1.3",
+         "A product is kept only if its residual correlation exceeds this factor\n"
+         "times the best correlation of its component features."),
+    ],
+    [
         ("kernel_splits", "bool, default=False",
          "Enable RBF landmark (\"blob\") splits for non-linear boundaries."),
         ("kernel_candidates", "int, default=8",

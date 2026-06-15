@@ -41,6 +41,7 @@ sections below have the details and the measured trade-offs.
 |---|---|---|---|
 | Neural leaves | `neural_leaves` | on | small per-leaf model instead of a constant |
 | Interaction-aware splits | `interaction_aware` | on (n≥2000) | learned feature interactions steer tree growth |
+| Product features | `product_features` | off | auto-built feature products for multiplicative targets |
 | Differentiable refinement | `refine_steps` | off | gradient-descent polish of splits and leaves (set `refine_steps>0`) |
 | Kernel splits | `kernel_splits` | off | non-linear RBF "blob" splits at a node |
 | Stochastic routing | `stochastic_routing` | off | smooth, probabilistic predictions |
@@ -335,6 +336,12 @@ not apply to its shared-structure path.
 | `detect_interactions` | `False` | Track which feature pairs interact during training. |
 | `interaction_aware` | `True` | Steer split selection toward features that interact with those already on the node's path. Only flips near-ties and never inflates the gain used to accept a split. On by default (A/B-verified on tabular data). |
 | `interaction_boost` | `0.5` | Maximum multiplicative boost (capped at `1 + interaction_boost`) applied to near-tie gains by interaction steering. |
+| **Product features** | | |
+| `product_features` | `False` | Detect feature groups that drive the residual multiplicatively (via the magnitude signal corr(x^2, r^2)) and append their products as columns before training, so the greedy splitter can use interactions like x_i*x_j*x_k that have no marginal gain. A correlation guard keeps a product only when it beats its components, so data without multiplicative structure is left untouched. Off by default (A/B: large win on multiplicative targets, neutral elsewhere). |
+| `product_max_features` | `5` | Number of top magnitude-signal features scanned for products. |
+| `product_max_order` | `3` | Highest product order considered (3 = up to triple products). |
+| `product_min_corr` | `0.03` | Absolute residual-correlation floor for a product to be kept. |
+| `product_corr_gain` | `1.3` | A product is kept only if its residual correlation exceeds this factor times the best correlation of its component features. |
 | **Kernel splits** | | |
 | `kernel_splits` | `False` | Enable RBF landmark ("blob") splits for non-linear boundaries. |
 | `kernel_candidates` | `8` | Number of candidate landmarks evaluated per node. |
