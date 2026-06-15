@@ -431,14 +431,26 @@ def grow_tree_levelwise(
 
     while active and depth < params.max_depth and splits_remaining > 0:
         M = len(active)
-        active_t = torch.tensor(active, dtype=torch.long, device=dev)
-        node_to_pos = torch.full((len(feature),), -1, dtype=torch.long, device=dev)
-        node_to_pos[active_t] = torch.arange(M, device=dev)
-        pos_of_row = node_to_pos[node_of_row]
-        arows = pos_of_row >= 0
-        pr = pos_of_row[arows]
-        bb = binned[arows]
-        gg, hh = grad[arows], hess[arows]
+        if depth == 0:
+            # Root level: every row maps to the single root node, so the
+            # active-row gather is the identity over the full (and largest)
+            # matrix. Skip it -- use binned/grad/hess directly with pr = 0.
+            arows = torch.arange(n, device=dev)
+            pr = torch.zeros(n, dtype=torch.long, device=dev)
+            bb, gg, hh = binned, grad, hess
+        else:
+            active_t = torch.tensor(active, dtype=torch.long, device=dev)
+            node_to_pos = torch.full((len(feature),), -1, dtype=torch.long, device=dev)
+            node_to_pos[active_t] = torch.arange(M, device=dev)
+            pos_of_row = node_to_pos[node_of_row]
+            # Active-row indices computed once and reused: boolean-mask indexing
+            # (binned[arows], grad[arows], ...) each runs its own nonzero kernel,
+            # so gathering with a shared integer index instead drops 3 nonzero
+            # passes per level (nonzero was ~22% of GPU tree-grow time).
+            arows = (pos_of_row >= 0).nonzero(as_tuple=True)[0]
+            pr = pos_of_row[arows]
+            bb = binned[arows]
+            gg, hh = grad[arows], hess[arows]
 
         cum = hist.cumsum(-1)  # fused over the (grad, hess, count) channels
         GL, HL, CL = cum[0], cum[1], cum[2]
@@ -519,7 +531,7 @@ def grow_tree_levelwise(
             pair_row = pos_to_pair[pr]
             participates = pair_row >= 0
             sil_row = sil_pair[pair_row.clamp(min=0)]
-            is_small = participates & (go_left == sil_row)
+            is_small = (participates & (go_left == sil_row)).nonzero(as_tuple=True)[0]
             hist_small = scatter_hist(pair_row[is_small], bb[is_small],
                                       gg[is_small], hh[is_small], P)
             hist_other = hist_parent - hist_small
