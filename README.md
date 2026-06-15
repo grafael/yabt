@@ -17,47 +17,20 @@ works as a drop-in replacement for XGBoost/LightGBM-style estimators.
 
 ## How it works
 
-### 1. Boosting: a sequence of trees, each fixing the last one's mistakes
-
-A single tree is a weak guesser. Boosting builds many of them in sequence:
-start from a trivial guess (the average target), then train each new tree to
-predict the error left over by all the trees so far. The final prediction is
-the sum of every tree's contribution.
-
-"Error" here means the gradient of the loss, the direction each prediction
-needs to move so the model gets better. That is why it is called gradient
-boosting.
-
-### 2. Building one tree, fast, on the GPU
-
-To grow a tree, YABT repeatedly asks which split best separates the rows into
-two groups with more similar errors. Checking every threshold on every
-feature would be slow, so YABT uses the standard histogram method on the GPU:
-
-- Binning turns continuous numbers into small integer buckets (0 to 255), so
-  the search only looks at a few hundred cut points per feature.
-- Histograms add up the errors falling in each bucket. From those sums YABT
-  computes a gain score for every split and picks the highest. The split
-  lands wherever it reduces the leftover error the most.
-- It keeps splitting the most promising leaf until it hits the leaf or depth
-  budget you set.
-
-### 3. The twist: put a small model in each leaf (and optionally refine)
-
-A normal boosting tree stops here: every split sits on a bin edge, and every
-leaf outputs a single constant. YABT can adjust both:
-
-- Neural leaves replace each leaf's constant with a small linear model over
-  the most useful features, so a leaf can capture trends inside its region
-  instead of flattening them to one number. On by default, because it helps
-  at near-equal cost.
-- Refinement treats the thresholds and leaf values as tunable numbers (like
-  neural-network weights) and takes a few gradient-descent steps to move them
-  off the coarse bin edges. Off by default: in our A/B tests it costs roughly
-  10% of training time for a negligible-to-negative accuracy change, so it is
-  opt-in via `refine_steps > 0`.
-
-Then the next tree starts on the error that is still left, and the loop repeats.
+YABT is gradient boosting: it builds a sequence of trees, each trained to
+predict the error (the gradient of the loss) left over by all the trees before
+it, and sums their contributions. Each tree is grown fast on the GPU with the
+standard histogram method — continuous features are binned into small integer
+buckets (0–255), bucketed error sums give a gain score for every candidate
+split, and the highest-gain split wins until the leaf or depth budget is hit.
+The twist is what sits in each leaf: instead of a single constant, YABT can use
+neural leaves — a small linear model over the most useful features, so a leaf
+captures trends inside its region (on by default, it helps at near-equal cost) —
+and optionally refinement, which treats thresholds and leaf values as tunable
+weights and takes a few gradient-descent steps off the coarse bin edges (off by
+default via `refine_steps > 0`, since A/B tests show ~10% more training time for
+negligible-to-negative accuracy gain). Then the next tree starts on the error
+that is still left, and the loop repeats.
 
 ## Optional features
 
