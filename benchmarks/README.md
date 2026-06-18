@@ -9,27 +9,34 @@ same-device timing.
 ## Files
 
 - **`openml_benchmark.py`** - Standard OpenML/Grinsztajn benchmark runner
-- **`datasets.py`** - Grinsztajn suite definitions + OpenML loader
+- **`datasets.py`** - Grinsztajn/CTR23/AMLB suite definitions + OpenML loader
 - **`openml_benchmark_results.json`** - Results from the standard benchmark
 
 ## Standard benchmark (openml_benchmark.py)
 
-The four official OpenML benchmark suites (resolved in `datasets.py`):
+The benchmark suites (resolved in `datasets.py`). The four Grinsztajn suites are
+the ones to cite; CTR23 and AMLB broaden regression coverage beyond Grinsztajn's
+filter (more small datasets, real missing values, high-cardinality categoricals):
 
-| Suite      | OpenML id | Task                       | # datasets |
-|------------|-----------|----------------------------|------------|
-| `num_clf`  | 337       | numerical classification   | 16         |
-| `num_reg`  | 336       | numerical regression       | 19         |
-| `cat_clf`  | 334       | categorical classification | 7          |
-| `cat_reg`  | 335       | categorical regression     | 17         |
+| Suite        | OpenML id | Task                       | # datasets |
+|--------------|-----------|----------------------------|------------|
+| `num_clf`    | 337       | numerical classification   | 16         |
+| `num_reg`    | 336       | numerical regression       | 19         |
+| `cat_clf`    | 334       | categorical classification | 7          |
+| `cat_reg`    | 335       | categorical regression     | 17         |
+| `ctr23_reg`  | 353       | regression (OpenML-CTR23)  | 35         |
+| `amlb_reg`   | 269       | regression (AutoML Bench)  | 33         |
 
 **Protocol:** each dataset is subsampled to `--max-rows` (Grinsztajn "medium"
 regime), split `--seeds` times into 70/30 train/test, and every model
-(YABT, XGBoost, LightGBM, CatBoost) is fit with default hyper-parameters
-(100 trees, lr 0.1, depth 6) on the **same device**. Metric is accuracy
-(classification) or R² (regression), reported as mean ± std across seeds. Each
-model gets native categorical handling (YABT target-encoding, XGBoost
-`enable_categorical`, LightGBM `categorical_feature`, CatBoost `cat_features`).
+(YABT, XGBoost, LightGBM, CatBoost, scikit-learn HistGBM) is fit with default
+hyper-parameters (100 trees, lr 0.1, depth 6) on the **same device**. Metric is
+accuracy (classification) or R² (regression), reported as mean ± std across
+seeds. Each model gets native categorical handling (YABT target-encoding,
+XGBoost `enable_categorical`, LightGBM `categorical_feature`, CatBoost
+`cat_features`, HistGBM `categorical_features`). HistGBM is CPU-only and ignores
+`--device`; on datasets whose categoricals exceed its bin limit it is skipped
+for that dataset (caught per-model, reported as FAILED).
 
 ```bash
 # list datasets in a suite

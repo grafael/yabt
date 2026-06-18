@@ -53,6 +53,12 @@ try:
     HAS_CAT = True
 except ImportError:
     HAS_CAT = False
+try:
+    from sklearn.ensemble import (
+        HistGradientBoostingClassifier, HistGradientBoostingRegressor)
+    HAS_HGB = True
+except ImportError:
+    HAS_HGB = False
 
 NTREES, LR, DEPTH, LEAVES = 100, 0.1, 6, 31
 
@@ -128,6 +134,22 @@ def _cat(task, device, cat_idx):
     return fit, pred
 
 
+def _hgb(task, device, cat_idx):
+    # scikit-learn HistGradientBoosting: CPU-only (ignores `device`), native
+    # categorical handling and missing-value support. High-cardinality
+    # categoricals (> max_bins) raise at fit and are caught per-model upstream.
+    Est = HistGradientBoostingClassifier if task == "clf" else HistGradientBoostingRegressor
+    cat_feat = [int(i) for i in cat_idx] if cat_idx else None
+    def fit(Xtr, ytr):
+        m = Est(max_iter=NTREES, learning_rate=LR, max_depth=DEPTH,
+                max_leaf_nodes=LEAVES, categorical_features=cat_feat, random_state=0)
+        m.fit(_cat_frame(Xtr, cat_idx, as_int=True), ytr)
+        return m
+    def pred(m, Xte):
+        return m.predict(_cat_frame(Xte, cat_idx, as_int=True))
+    return fit, pred
+
+
 def model_builders():
     b = {"YABT": _yabt}
     if HAS_XGB:
@@ -136,6 +158,8 @@ def model_builders():
         b["LightGBM"] = _lgb
     if HAS_CAT:
         b["CatBoost"] = _cat
+    if HAS_HGB:
+        b["HistGBM"] = _hgb
     return b
 
 

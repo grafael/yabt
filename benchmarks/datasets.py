@@ -1,12 +1,18 @@
-"""OpenML loaders for the Grinsztajn et al. (2022) tabular benchmark suites.
+"""OpenML loaders for several curated tabular benchmark suites.
 
-These are the official OpenML benchmark suites used by "Why do tree-based models
+The primary suites are from Grinsztajn et al. (2022), "Why do tree-based models
 still outperform deep learning on tabular data?" (NeurIPS 2022):
 
     337  Tabular benchmark numerical classification   (16 datasets)
     336  Tabular benchmark numerical regression       (19 datasets)
     334  Tabular benchmark categorical classification ( 7 datasets)
     335  Tabular benchmark categorical regression     (17 datasets)
+
+Two additional regression suites broaden coverage beyond the Grinsztajn filter
+(more small datasets, real missing values, high-cardinality categoricals):
+
+    353  OpenML-CTR23 curated regression benchmark    (35 datasets)
+    269  AutoML Benchmark regression (AMLB)           (33 datasets)
 
 The dataset ids below are resolved from those suites. They are hard-coded so a
 benchmark run does not depend on the OpenML study endpoint being reachable; use
@@ -27,6 +33,8 @@ SUITES = {
     "num_reg": (336, "reg"),
     "cat_clf": (334, "clf"),
     "cat_reg": (335, "reg"),
+    "ctr23_reg": (353, "reg"),
+    "amlb_reg": (269, "reg"),
 }
 
 # suite tag -> list of (openml dataset id, friendly name, n_instances).
@@ -99,6 +107,78 @@ SUITE_DATASETS: dict[str, list[tuple[int, str, int]]] = {
         (44065, "nyc-taxi-green-dec-2016", 581835),
         (45047, "Airlines_DepDelay_1M", 1000000),
         (45045, "delays_zurich_transport", 5465575),
+    ],
+    "ctr23_reg": [
+        (44962, "forest_fires", 517),
+        (44967, "student_performance_por", 649),
+        (44960, "energy_efficiency", 768),
+        (44994, "cars", 804),
+        (44970, "QSAR_fish_toxicity", 908),
+        (44959, "concrete_compressive_strength", 1030),
+        (44965, "geographical_origin_of_music", 1059),
+        (44966, "solar_flare", 1066),
+        (44987, "socmob", 1156),
+        (41021, "Moneyball", 1232),
+        (44957, "airfoil_self_noise", 1503),
+        (44972, "red_wine", 1599),
+        (44958, "auction_verification", 2043),
+        (45402, "space_ga", 3107),
+        (44956, "abalone", 4177),
+        (44971, "white_wine", 4898),
+        (44978, "cpu_activity", 8192),
+        (44980, "kin8nm", 8192),
+        (44981, "pumadyn32nh", 8192),
+        (44973, "grid_stability", 10000),
+        (44990, "brazilian_houses", 10692),
+        (44969, "naval_propulsion_plant", 11934),
+        (44983, "miami_housing", 13932),
+        (45012, "fifa", 19178),
+        (44977, "california_housing", 20640),
+        (44964, "superconductivity", 21263),
+        (44989, "kings_county", 21613),
+        (44993, "health_insurance", 22272),
+        (44992, "fps_benchmark", 24624),
+        (44984, "cps88wages", 28155),
+        (44963, "physiochemical_protein", 45730),
+        (44976, "sarcos", 48933),
+        (44979, "diamonds", 53940),
+        (44974, "video_transcoding", 68784),
+        (44975, "wave_energy", 72000),
+    ],
+    "amlb_reg": [
+        (505, "tecator", 240),
+        (531, "boston", 506),
+        (546, "sensory", 576),
+        (43071, "MIP-2016-regression", 1090),
+        (541, "socmob", 1156),
+        (41021, "Moneyball", 1232),
+        (42563, "house_prices_nominal", 1460),
+        (42730, "us_crime", 1994),
+        (550, "quake", 2178),
+        (507, "space_ga", 3107),
+        (42726, "abalone", 4177),
+        (42570, "Mercedes_Benz_Greener_Manufacturing", 4209),
+        (41980, "SAT11-HAND-runtime-regression", 4440),
+        (42572, "Santander_transaction_value", 4459),
+        (3050, "QSAR-TID-11", 5742),
+        (3277, "QSAR-TID-10980", 5766),
+        (287, "wine_quality", 6497),
+        (42727, "colleges", 7063),
+        (422, "topo_2_1", 8885),
+        (416, "yprop_4_1", 8885),
+        (42688, "Brazilian_houses", 10692),
+        (201, "pol", 15000),
+        (216, "elevators", 16599),
+        (42731, "house_sales", 21613),
+        (574, "house_16H", 22784),
+        (42724, "OnlineNewsPopularity", 39644),
+        (42225, "diamonds", 53940),
+        (41540, "black_friday", 166821),
+        (42571, "Allstate_Claims_Severity", 188318),
+        (42705, "Yolanda", 400000),
+        (42729, "nyc-taxi-green-dec-2016", 581835),
+        (4549, "Buzzinsocialmedia_Twitter", 583250),
+        (42728, "Airlines_DepDelay_10M", 10000000),
     ],
 }
 
