@@ -28,9 +28,16 @@ def _candidates(n: int) -> list[tuple[str, dict]]:
         ("constant-leaves", {"neural_leaves": False}),       # sharp-boundary data
         ("strong-interactions", {"interaction_boost": 1.0}),  # interaction-heavy data
         # low-signal/noisy targets: a min-gain floor refuses to split on noise.
-        # A global gamma is net-negative suite-wide (it wrecks high-signal smooth
-        # targets), but validation-gating deploys it only where it actually wins.
-        ("regularized-splits", {"gamma": 1.0, "max_leaves": 15}),
+        # A *fixed* gamma is net-negative suite-wide -- its right value is
+        # target-scale dependent, so it wrecks high-signal smooth targets. The
+        # scale-invariant min_split_gain_rel floor (gamma = rho * var(grad) per
+        # tree) avoids that; validation-gating then deploys it only where it wins
+        # (full-suite A/B: large gains on quake, forest_fires, solar_flare,
+        # abalone) and rejects it on smooth targets it would hurt (airfoil,
+        # kin8nm, white_wine). The strong variant pairs it with a shallower tree
+        # for the noisiest targets.
+        ("regularized-splits", {"min_split_gain_rel": 0.5}),
+        ("regularized-splits-strong", {"min_split_gain_rel": 2.0, "max_leaves": 15}),
         ("fine-grain", {"min_samples_leaf": 5, "max_leaves": 63}),
     ]
     if n < 5000:

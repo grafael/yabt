@@ -32,6 +32,10 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "L2 regularization on leaf weights."),
         ("gamma", "float, default=0.0",
          "Minimum loss reduction required to make a split."),
+        ("min_split_gain_rel", "float, default=0.0",
+         "Scale-invariant min-split-gain floor: per tree, an effective gamma of "
+         "min_split_gain_rel * var(gradients) is added, refusing noise splits "
+         "without a target-scale-dependent absolute threshold."),
         ("min_child_weight", "float, default=1e-3",
          "Minimum sum of Hessian (instance weight) allowed in a child."),
         ("min_samples_leaf", "int, default=20",

@@ -66,6 +66,14 @@ class BoostParams:
     max_depth: int = 64
     reg_lambda: float = 1.0
     gamma: float = 0.0
+    # Scale-invariant min-split-gain floor: per tree, an effective gamma of
+    # ``min_split_gain_rel * var(gradients)`` is added. Under a pure-noise target
+    # a split's Newton gain is O(var(grad)) regardless of node size, while real
+    # signal gives O(node_size * signal); a small relative floor therefore refuses
+    # noise splits without touching high-signal ones, and because the gradient
+    # variance shrinks as boosting fits real signal the floor self-adapts per tree
+    # (unlike a fixed ``gamma``, whose right value is target-scale dependent).
+    min_split_gain_rel: float = 0.0
     min_child_weight: float = 1e-3
     min_samples_leaf: int = 20
     subsample: float = 1.0
@@ -316,6 +324,13 @@ class Booster:
         for t in range(p.n_estimators):
             grad, hess = self.loss.grad_hess(margin, yt)
 
+            # Scale-invariant min-split-gain: derive this tree's gamma from the
+            # current gradient variance (see BoostParams.min_split_gain_rel).
+            tp_t = tp
+            if p.min_split_gain_rel > 0.0:
+                eff_gamma = p.gamma + p.min_split_gain_rel * float(grad.var())
+                tp_t = replace(tp, gamma=eff_gamma)
+
             # Gradient-based One-Side Sampling (GOSS): a novel sampling strategy
             row_weights = None
             if p.goss_enabled and self.goss is not None:
@@ -374,7 +389,7 @@ class Booster:
                          and not use_levelwise and not p.kernel_splits)
             gb, gg2, gh2 = (binned[rows], g, h) if rows is not None else (binned, grad, hess)
             if use_levelwise:
-                tree = grow_tree_levelwise(gb, gg2, gh2, self.binner, tp, fmask,
+                tree = grow_tree_levelwise(gb, gg2, gh2, self.binner, tp_t, fmask,
                                            interaction_matrix=imat,
                                            interaction_boost=p.interaction_boost)
             elif use_numba:
@@ -385,17 +400,17 @@ class Booster:
                 sl = None
                 if p.sparse_hist is not False and rows is None:
                     sl = self._get_sparse_layout(binned, n, F)
-                tree = grow_tree_numba(gb, gg2, gh2, self.binner, tp, fmask,
+                tree = grow_tree_numba(gb, gg2, gh2, self.binner, tp_t, fmask,
                                        interaction_matrix=imat,
                                        interaction_boost=p.interaction_boost,
                                        sparse_layout=sl)
             elif rows is not None:
                 Xn_t = Xn[rows] if Xn is not None else None
-                tree = grow_tree(gb, gg2, gh2, self.binner, tp, fmask, Xnorm=Xn_t,
+                tree = grow_tree(gb, gg2, gh2, self.binner, tp_t, fmask, Xnorm=Xn_t,
                                  gen=gen, kernel_weights_override=kw_override,
                                  interaction_matrix=imat, interaction_boost=p.interaction_boost)
             else:
-                tree = grow_tree(gb, gg2, gh2, self.binner, tp, fmask, Xnorm=Xn,
+                tree = grow_tree(gb, gg2, gh2, self.binner, tp_t, fmask, Xnorm=Xn,
                                  gen=gen, kernel_weights_override=kw_override,
                                  interaction_matrix=imat, interaction_boost=p.interaction_boost)
 

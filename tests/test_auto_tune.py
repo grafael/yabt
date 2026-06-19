@@ -87,3 +87,44 @@ def test_auto_tune_regressor():
     r = y[2200:] - reg.predict(X[2200:])
     assert 1 - r.var() / y[2200:].var() > 0.7
     assert reg.booster_.tuning_report_ is not None
+
+
+def test_min_split_gain_rel_curbs_noise_overfit():
+    # On a pure-noise target (y independent of X) the scale-invariant min-gain
+    # floor refuses noise splits, so test R2 is no worse than the overfitting
+    # default (which goes negative).
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(2000, 6)).astype(np.float32)
+    y = rng.normal(size=2000).astype(np.float32)
+    Xtr, ytr, Xte, yte = X[:1400], y[:1400], X[1400:], y[1400:]
+    base = YABTRegressor(n_estimators=100, max_leaves=31, refine_steps=0, seed=0).fit(Xtr, ytr)
+    reg = YABTRegressor(n_estimators=100, max_leaves=31, min_split_gain_rel=2.0,
+                        refine_steps=0, seed=0).fit(Xtr, ytr)
+    def r2(m):
+        p = m.predict(Xte)
+        return 1 - ((yte - p) ** 2).mean() / yte.var()
+    assert r2(reg) > r2(base)
+
+
+def test_min_split_gain_rel_scale_equivariant():
+    # gain and the rho*var(grad) floor both scale with the target variance, so
+    # split structure is invariant to a constant rescaling of y and predictions
+    # scale linearly with it (this is what a fixed absolute gamma cannot do).
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(800, 5)).astype(np.float32)
+    y = (X[:, 0] > 0).astype(np.float32) * 3 + 0.1 * rng.normal(size=800).astype(np.float32)
+    kw = dict(n_estimators=30, max_leaves=15, reg_lambda=1e-6, neural_leaves=False,
+              min_split_gain_rel=1.0, refine_steps=0, seed=0)
+    p1 = YABTRegressor(**kw).fit(X, y).predict(X)
+    p2 = YABTRegressor(**kw).fit(X, 100.0 * y).predict(X)
+    np.testing.assert_allclose(p2, 100.0 * p1, rtol=1e-3, atol=1e-3)
+
+
+def test_auto_tune_offers_relative_gamma_candidate():
+    from yabt.auto_tune import _candidates
+    names = {name for name, _ in _candidates(10000)}
+    assert {"regularized-splits", "regularized-splits-strong"} <= names
+    # the regularized candidates use the scale-invariant floor, not a fixed gamma
+    over = dict(_candidates(10000))
+    assert "min_split_gain_rel" in over["regularized-splits"]
+    assert "gamma" not in over["regularized-splits"]

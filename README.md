@@ -315,6 +315,7 @@ not apply to its shared-structure path.
 | `max_depth` | `64` | Maximum tree depth. |
 | `reg_lambda` | `1.0` | L2 regularization on leaf weights. |
 | `gamma` | `0.0` | Minimum loss reduction required to make a split. |
+| `min_split_gain_rel` | `0.0` | Scale-invariant min-split-gain floor: per tree, an effective gamma of min_split_gain_rel * var(gradients) is added, refusing noise splits without a target-scale-dependent absolute threshold. |
 | `min_child_weight` | `1e-3` | Minimum sum of Hessian (instance weight) allowed in a child. |
 | `min_samples_leaf` | `20` | Minimum number of samples per leaf. |
 | `subsample` | `1.0` | Row subsampling ratio drawn per tree. |
