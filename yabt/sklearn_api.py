@@ -300,9 +300,9 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
         self.n_classes_ = len(self.classes_)
 
         Xe = self._encode(X, y, fit=True)
+        self._is_binary = self.n_classes_ == 2
 
-        if self.n_classes_ == 2:
-            # Binary classification: use standard binary booster
+        if self._is_binary:
             yt = (y == self.classes_[1]).astype(np.float32)
             ev = None
             if eval_set is not None:
@@ -310,53 +310,30 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
                 ev = (self._encode(eval_set[0], None, fit=False), y_eval)
             self.booster_ = Booster(self._boost_params(), LogLoss())
             self.booster_.fit(Xe, yt, eval_set=ev)
-            self._is_binary = True
-        else:
-            # Multiclass: use One-vs-Rest
+        else:  # One-vs-Rest
             ev = None
             if eval_set is not None:
                 ev = (self._encode(eval_set[0], None, fit=False), eval_set[1])
             self.booster_ = MulticlassBooster(self._boost_params())
             self.booster_.fit(Xe, y, eval_set=ev)
-            self._is_binary = False
 
         return self
 
     def predict_proba(self, X) -> np.ndarray:
-        """Predict class probabilities.
-
-        Returns
-        -------
-        proba : np.ndarray of shape (n_samples, n_classes)
-            Probability for each class
-        """
+        """Class probabilities, (n_samples, n_classes)."""
         Xe = self._encode(X, None, fit=False)
-
         if self._is_binary:
-            # Binary: use logistic function
             p = expit(self.booster_.predict_margin(Xe))
             return np.stack([1 - p, p], axis=1)
-        else:
-            # Multiclass: use softmax (via MulticlassBooster)
-            return self.booster_.predict_proba(Xe)
+        return self.booster_.predict_proba(Xe)
 
     def predict(self, X) -> np.ndarray:
-        """Predict class labels.
-
-        Returns
-        -------
-        predictions : np.ndarray of shape (n_samples,)
-            Predicted class label for each sample
-        """
+        """Predicted class label per row."""
         Xe = self._encode(X, None, fit=False)
-
         if self._is_binary:
-            # Binary: use margin threshold
             margin = self.booster_.predict_margin(Xe)
             return self.classes_[(margin > 0).astype(int)]
-        else:
-            # Multiclass: use argmax of probabilities
-            return self.booster_.predict(Xe)
+        return self.booster_.predict(Xe)
 
 
 class YABTRegressor(_YABTBase, RegressorMixin):

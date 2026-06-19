@@ -9,6 +9,14 @@ from .binning import MAX_BINS
 _NEG_INF = float("-inf")
 
 
+def _flat_bin_index(binned: torch.Tensor, B: int) -> torch.Tensor:
+    """Row-major (feature, bin) index per element of ``binned`` (n, F), flattened
+    to (n*F,) for scatter into an ``F * B`` histogram bank."""
+    F = binned.shape[1]
+    dev = binned.device
+    return (torch.arange(F, device=dev, dtype=torch.long).unsqueeze(0) * B + binned.long()).reshape(-1)
+
+
 def build_histogram(
     binned: torch.Tensor,  # (n, F) uint8, rows of one leaf
     grad: torch.Tensor,    # (n,) float32
@@ -23,7 +31,7 @@ def build_histogram(
     n, F = binned.shape
     B = MAX_BINS
     dev = binned.device
-    flat = (torch.arange(F, device=dev, dtype=torch.long).unsqueeze(0) * B + binned.long()).reshape(-1)
+    flat = _flat_bin_index(binned, B)
 
     hist = torch.zeros(3, F * B, dtype=torch.float32, device=dev)
     hist[0].scatter_add_(0, flat, grad.unsqueeze(1).expand(n, F).reshape(-1))
@@ -121,7 +129,7 @@ def build_histogram_multi(
     T = grad.shape[1]
     B = MAX_BINS
     dev = binned.device
-    flat = (torch.arange(F, device=dev, dtype=torch.long).unsqueeze(0) * B + binned.long()).reshape(-1)
+    flat = _flat_bin_index(binned, B)
 
     hist = torch.zeros(2 * T + 1, F * B, dtype=torch.float32, device=dev)
     for t in range(T):
