@@ -152,14 +152,19 @@ def _cat(task, device, cat_idx, cat_cats):
 
 def _hgb(task, device, cat_idx, cat_cats):
     # scikit-learn HistGradientBoosting: CPU-only (ignores `device`), native
-    # categorical handling and missing-value support. High-cardinality
-    # categoricals (> max_bins) raise at fit and are caught per-model upstream.
+    # categorical handling and missing-value support. Its native categorical
+    # support caps cardinality at max_bins (255, the hard upper bound); columns
+    # above that are declared numeric and fall back to their ordinal int codes
+    # so fit completes instead of raising (the other models tolerate them).
     Est = HistGradientBoostingClassifier if task == "clf" else HistGradientBoostingRegressor
-    cat_feat = [int(i) for i in cat_idx] if cat_idx else None
+    MAX_BINS = 255
     def fit(Xtr, ytr):
-        m = Est(max_iter=NTREES, learning_rate=LR, max_depth=DEPTH,
+        Xc = _cat_frame(Xtr, cat_idx, as_int=True)
+        cat_feat = [int(i) for i in cat_idx
+                    if Xc.iloc[:, i].nunique() <= MAX_BINS] or None
+        m = Est(max_iter=NTREES, learning_rate=LR, max_depth=DEPTH, max_bins=MAX_BINS,
                 max_leaf_nodes=LEAVES, categorical_features=cat_feat, random_state=0)
-        m.fit(_cat_frame(Xtr, cat_idx, as_int=True), ytr)
+        m.fit(Xc, ytr)
         return m
     def pred(m, Xte):
         return m.predict(_cat_frame(Xte, cat_idx, as_int=True))
