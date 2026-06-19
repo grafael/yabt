@@ -163,6 +163,17 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "the axis-split path; it falls back to the torch grower on CUDA, on the\n"
          "level-wise path, or when ``kernel_splits`` is on. True/False force it\n"
          "on/off (True still falls back where unsupported)."),
+        ("c_grower", "bool or str, default=\"auto\"",
+         "Use the OpenMP-parallel C grower: the same leaf-wise kernel as the\n"
+         "Numba grower but with the histogram build and split search threaded\n"
+         "across cores (the Numba grower is single-threaded), bit-identical\n"
+         "trees. \"auto\" uses it wherever the Numba grower runs when a C compiler\n"
+         "is available and the problem is large enough to amortize threads,\n"
+         "else falls back to Numba. True forces it on (still falls back if no\n"
+         "compiler); False disables it."),
+        ("c_grower_threads", "int, default=0",
+         "OpenMP thread cap for the C grower; 0 picks a default (min(cores, 8),\n"
+         "or ``OMP_NUM_THREADS`` if set above 1)."),
         ("sparse_hist", "bool or str, default=\"auto\"",
          "Sparse histogram build for the Numba grower: store each feature's\n"
          "non-modal bins and fill the modal bin by subtraction, making a\n"

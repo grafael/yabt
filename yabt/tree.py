@@ -14,6 +14,9 @@ from .kernel_splits import find_best_kernel_split, importance_weights
 
 LEAF = -1
 KERNEL_SPLIT = -2  # sentinel in Tree.feature for kernel-based (RBF) splits
+# Below this row count the torch apply loop is fine; the C apply's marshalling
+# (host copies + thread spin-up) only pays off when routing many rows.
+_C_APPLY_MIN_ROWS = 4096
 
 
 @dataclass
@@ -79,6 +82,18 @@ class Tree:
     def apply(self, X: torch.Tensor) -> torch.Tensor:
         """Leaf (node) index per row of raw feature matrix X (n, F)."""
         n = X.shape[0]
+        # CPU fast path: hard-routing trees (no kernel splits) route via the
+        # OpenMP C kernel, which parallelizes the per-row traversal across cores.
+        # Same leaf assignment as the torch loop below; falls back on any failure.
+        if (self.kernel_id is None and X.device.type == "cpu"
+                and n >= _C_APPLY_MIN_ROWS):
+            try:
+                from .grow_c import apply_c, is_available
+                if is_available():
+                    return apply_c(X, self.feature, self.threshold,
+                                   self.left, self.right)
+            except Exception:
+                pass
         # Route leaves to themselves so a settled row is a fixed point of the
         # update: this drops the per-level `torch.where(is_leaf, ...)` re-mask and
         # its host sync, leaving a single where in the (depth-bounded) loop.

@@ -164,6 +164,18 @@ class BoostParams:
     # the level-wise path, or when kernel_splits is on (unsupported). True/False
     # force it on/off (True still falls back where unsupported).
     numba_grower: bool | str = "auto"
+    # OpenMP-parallel C grower: same leaf-wise kernel as the Numba grower but with
+    # the dense histogram build and the per-feature split search parallelized
+    # across cores (the Numba grower is single-threaded -- the real gap vs
+    # XGBoost/LightGBM, which saturate every core). Trees are bit-identical to the
+    # Numba grower (per-feature accumulation order preserved). "auto" (default)
+    # uses it wherever the Numba grower would run, when a C compiler is available
+    # and the work is large enough to amortize thread spin-up (n*F above a
+    # threshold); it falls back to the Numba grower otherwise. True forces it on
+    # (still falls back if no compiler / unsupported path); False disables it.
+    # ``c_grower_threads`` caps OpenMP threads (0 = let OpenMP/the env decide).
+    c_grower: bool | str = "auto"
+    c_grower_threads: int = 0
     # Sparse histogram build for the Numba grower: store only each feature's
     # non-default (non-modal) bins and fill the default bin by subtraction, so a
     # histogram costs O(node_nnz + F) instead of O(node_rows * F). The whole win
@@ -201,6 +213,28 @@ class Booster:
         self.product_spec_: list[tuple[int, ...]] = []
         self._sparse_layout = None        # cached CSR layout for the sparse grower
         self._sparse_decided = False      # whether "auto" gating has been resolved
+        self._c_grower_avail = None       # cached compiler/lib probe (None=unprobed)
+        self._c_grower_failed = False     # a C-grow call raised -> stop trying
+
+    # Below this n*F the OpenMP thread spin-up outweighs the parallel speedup, so
+    # "auto" keeps the single-threaded Numba grower (measured crossover; tiny
+    # trees are dominated by per-tree Python/torch overhead anyway).
+    _C_GROWER_MIN_WORK = 100_000
+
+    def _c_grower_ok(self) -> bool:
+        """Whether the C grower is usable: not disabled, compiler present, and no
+        prior failure this fit. Probed once and cached."""
+        if getattr(self, "_c_grower_failed", False):
+            return False
+        ok = getattr(self, "_c_grower_avail", None)
+        if ok is None:
+            try:
+                from .grow_c import is_available
+                ok = is_available()
+            except Exception:
+                ok = False
+            self._c_grower_avail = ok
+        return ok
 
     def _get_sparse_layout(self, binned, n, F):
         """Lazily build and cache the sparse histogram layout; gate "auto" on the
@@ -400,10 +434,31 @@ class Booster:
                 sl = None
                 if p.sparse_hist is not False and rows is None:
                     sl = self._get_sparse_layout(binned, n, F)
-                tree = grow_tree_numba(gb, gg2, gh2, self.binner, tp_t, fmask,
-                                       interaction_matrix=imat,
-                                       interaction_boost=p.interaction_boost,
-                                       sparse_layout=sl)
+                # Prefer the OpenMP C grower (multi-core) over single-threaded
+                # Numba when available; "auto" gates on problem size so tiny trees
+                # don't pay thread spin-up. Same kernel/output, falls back to Numba.
+                gn = gb.shape[0]
+                use_c = (p.c_grower is True or
+                         (p.c_grower == "auto" and gn * F >= self._C_GROWER_MIN_WORK))
+                grown = None
+                if use_c and self._c_grower_ok():
+                    try:
+                        from .grow_c import grow_tree_c
+                        grown = grow_tree_c(gb, gg2, gh2, self.binner, tp_t, fmask,
+                                            interaction_matrix=imat,
+                                            interaction_boost=p.interaction_boost,
+                                            sparse_layout=sl,
+                                            n_threads=p.c_grower_threads)
+                    except Exception:
+                        self._c_grower_failed = True  # fall back for the rest of fit
+                        grown = None
+                if grown is not None:
+                    tree = grown
+                else:
+                    tree = grow_tree_numba(gb, gg2, gh2, self.binner, tp_t, fmask,
+                                           interaction_matrix=imat,
+                                           interaction_boost=p.interaction_boost,
+                                           sparse_layout=sl)
             else:
                 Xn_t = Xn[rows] if (Xn is not None and rows is not None) else Xn
                 tree = grow_tree(gb, gg2, gh2, self.binner, tp_t, fmask, Xnorm=Xn_t,

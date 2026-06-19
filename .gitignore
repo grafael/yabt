@@ -7,6 +7,11 @@ benchmarks/data_cache/
 .pytest_cache/
 catboost_info/
 
+# Compiled C grower (built on first import, cached next to the source).
+# Ignore every generated artifact (.so/.dll and MSVC .lib/.exp/.obj), keep grow.c.
+yabt/_cgrow/*
+!yabt/_cgrow/grow.c
+
 # macOS
 .DS_Store
 ._*
