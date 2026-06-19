@@ -234,6 +234,23 @@ def list_datasets(suite: str | None = None) -> list[tuple[str, int, str, str]]:
     return out
 
 
+def _load_sparse_arff(dataset_id: int):
+    """Load a sparse-ARFF dataset that openml's dataframe parser can't handle,
+    via sklearn's parser. Returns (X_df, y_series, cat_mask) matching the shape
+    of ``ds.get_data(..., dataset_format="dataframe")``."""
+    from scipy import sparse
+    from sklearn.datasets import fetch_openml
+
+    d = fetch_openml(data_id=dataset_id, as_frame=False, parser="auto")
+    Xa = d.data.toarray() if sparse.issparse(d.data) else np.asarray(d.data)
+    names = list(d.feature_names)
+    cats = d.categories or {}
+    cat_mask = [n in cats for n in names]
+    X = pd.DataFrame(Xa, columns=names)
+    y = pd.Series(np.asarray(d.target).ravel(), name=getattr(d, "target_names", ["target"])[0])
+    return X, y, cat_mask
+
+
 def load_dataset(dataset_id: int, task: str, *, max_rows: int | None = None, seed: int = 0):
     """Load one OpenML dataset by id.
 
@@ -251,7 +268,13 @@ def load_dataset(dataset_id: int, task: str, *, max_rows: int | None = None, see
         dataset_id, download_data=True, download_qualities=False,
         download_features_meta_data=True,
     )
-    X, y, cat_mask, _ = ds.get_data(target=ds.default_target_attribute, dataset_format="dataframe")
+    try:
+        X, y, cat_mask, _ = ds.get_data(target=ds.default_target_attribute, dataset_format="dataframe")
+    except TypeError:
+        # openml's ARFF parser chokes on sparse ARFF datasets (e.g. QSAR-TID-11
+        # /-10980: pd.factorize on a list); fall back to sklearn's parser, which
+        # handles them via as_frame=False.
+        X, y, cat_mask = _load_sparse_arff(dataset_id)
 
     # drop rows with missing target
     keep = ~pd.isna(y)
