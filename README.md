@@ -64,6 +64,34 @@ Or with pip:
 pip install -e .
 ```
 
+### Native components
+
+YABT is pure Python and works out of the box with the dependencies above; no
+build step is required. The one native component is the optional **OpenMP C
+grower** (`yabt/_cgrow/grow.c`), a multi-core drop-in for the single-threaded
+Numba grower. It is *not* shipped as a precompiled binary — instead it is
+compiled once, on demand, to a shared library cached next to the source the
+first time a `fit` actually uses it (keyed by a hash of the source plus the
+exact build command). This needs a C compiler with OpenMP support
+(`gcc`/`clang` on Linux, Apple Clang + Homebrew `libomp` on macOS, MinGW/MSVC
+on Windows).
+
+If no working compiler is found, YABT silently falls back to the Numba grower —
+a **performance** fallback, not a correctness one (single-threaded C is at
+parity with Numba; the C grower's only edge is multi-core scaling).
+
+To compile it deliberately ahead of time — e.g. in a Dockerfile or CI step, so
+the cost and any toolchain problems surface up front rather than during the
+first training run — run the prebuild diagnostic:
+
+```bash
+python -m yabt.grow_c
+```
+
+It reports the detected compilers and the cached library path on success, or
+the per-candidate build errors on failure. To opt out of the C grower entirely,
+pass `c_grower=False` to any estimator.
+
 ## Example
 
 ```python

@@ -247,6 +247,35 @@ def is_available() -> bool:
         return False
 
 
+def prebuild() -> bool:
+    """Eagerly compile and load the C grower, printing a diagnostic report.
+
+    This is the deliberate counterpart to the lazy compile-on-first-``fit``
+    path: run it in a Dockerfile, CI step, or post-install hook to surface
+    compiler/OpenMP problems up front (and to bake the cached ``.so`` into an
+    image) instead of paying the build -- or discovering it is impossible --
+    during the first training run. Returns True if the library is usable.
+    """
+    print(f"platform: {sys.platform}")
+    print(f"compilers on PATH: {', '.join(_compilers()) or '(none found)'}")
+    try:
+        _load()
+        # Report the cached artifact that actually loaded.
+        for _name, ext, argv_fn in _candidates():
+            path = _artifact_path(ext, argv_fn)
+            if os.path.exists(path):
+                print(f"C grower: available -> {path}")
+                break
+        else:
+            print("C grower: available")
+        return True
+    except Exception as exc:
+        print(f"C grower: UNAVAILABLE\n{exc}")
+        print("\nThe Numba grower (single-threaded) will be used instead; this "
+              "is a performance fallback, not a correctness loss.")
+        return False
+
+
 def _ptr(arr: np.ndarray):
     return arr.ctypes.data_as(ctypes.c_void_p)
 
@@ -407,3 +436,7 @@ def grow_tree_c(
         depth=int(depth.max()) + 1,
         gate_scale=torch.from_numpy(gate).to(dev),
     )
+
+
+if __name__ == "__main__":  # `python -m yabt.grow_c` -> prebuild + diagnostics
+    raise SystemExit(0 if prebuild() else 1)
