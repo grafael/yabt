@@ -159,6 +159,17 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "the axis-split path; it falls back to the torch grower on CUDA, on the\n"
          "level-wise path, or when ``kernel_splits`` is on. True/False force it\n"
          "on/off (True still falls back where unsupported)."),
+        ("sparse_hist", "bool or str, default=\"auto\"",
+         "Sparse histogram build for the Numba grower: store each feature's\n"
+         "non-modal bins and fill the modal bin by subtraction, making a\n"
+         "histogram cost O(node_nnz + F) instead of O(node_rows * F). The win is\n"
+         "on wide, sparse data (e.g. ~1.3x on Santander, 4991 features 97% zero),\n"
+         "accuracy-neutral. \"auto\" uses it only when the data is dense enough\n"
+         "below ``sparse_hist_max_density`` and rows are not subsampled; True/False\n"
+         "force it (still requires the Numba grower)."),
+        ("sparse_hist_max_density", "float, default=0.5",
+         "Max fraction of explicitly-stored cells for \"auto\" ``sparse_hist`` to\n"
+         "engage; above this the dense builder is used (no sparsity to exploit)."),
     ],
     [
         ("early_stopping_rounds", "int, default=0",

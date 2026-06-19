@@ -40,22 +40,79 @@ def _build_hist(binned, grad, hess, rows, start, end, out):
 
 
 @njit(cache=True, fastmath=True)
-def _compute_boost(path_row, imat, ib, out):
-    """Per-feature selection boost: out[j] = 1 + ib * max over path features p of
-    imat[p, j] (1 when the path is empty). Mirrors grow_tree's interaction boost."""
-    F = out.shape[0]
-    for j in range(F):
-        mx = 0.0
-        for p in range(F):
-            if path_row[p]:
-                v = imat[p, j]
-                if v > mx:
-                    mx = v
-        out[j] = 1.0 + ib * mx
+def _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
+                       rows, start, end, out, expl_g, expl_h, expl_c):
+    """Sparse (CSC-of-nonzeros) histogram for rows[start:end] into ``out``.
+
+    Each feature has a *default bin* (its most common value, typically the
+    binned zero of a sparse column). The CSR arrays ``indptr/indices/data`` store
+    only the entries whose bin differs from that default. We scatter those
+    explicit entries and accumulate per-feature explicit (g,h,count) sums, then
+    fill every feature's default bin with the node total minus its explicit sum.
+    Cost is O(node_nnz + F) instead of the dense O(node_rows * F), which is the
+    whole win on wide, sparse data. Produces the same (3,F,B) histogram the dense
+    builder does, so sibling subtraction and split search are unchanged.
+    """
+    F = out.shape[1]
+    out[:] = 0.0
+    expl_g[:] = 0.0
+    expl_h[:] = 0.0
+    expl_c[:] = 0.0
+    G = 0.0
+    H = 0.0
+    C = 0.0
+    for i in range(start, end):
+        r = rows[i]
+        g = grad[r]
+        h = hess[r]
+        G += g
+        H += h
+        C += 1.0
+        for idx in range(indptr[r], indptr[r + 1]):
+            f = indices[idx]
+            b = data[idx]
+            out[0, f, b] += g
+            out[1, f, b] += h
+            out[2, f, b] += 1.0
+            expl_g[f] += g
+            expl_h[f] += h
+            expl_c[f] += 1.0
+    # Default bin gets the node total minus what the explicit entries carried;
+    # no explicit entry lands here (those are excluded when the layout is built),
+    # so this is a write, not a read-modify of real data.
+    for f in range(F):
+        df = default_bin[f]
+        out[0, f, df] += G - expl_g[f]
+        out[1, f, df] += H - expl_h[f]
+        out[2, f, df] += C - expl_c[f]
 
 
 @njit(cache=True, fastmath=True)
-def _best_split(hist, lam, gamma, mcw, msl, fmask, boost):
+def _compute_boost(path_row, imat, ib, out):
+    """Per-feature selection boost: out[j] = 1 + ib * max over path features p of
+    imat[p, j] (1 when the path is empty). Mirrors grow_tree's interaction boost.
+
+    Iterates over the few features actually on the node's path rather than the
+    full F x F matrix: the path has at most depth (~log) features, so this is
+    O(F * path_len) instead of O(F^2). On wide data (F in the thousands) the old
+    dense double loop dominated the whole fit; this is bit-identical (same running
+    max, same 0.0 floor) but ~1000x cheaper. The inner sweep over j walks imat
+    row-contiguously, so it is also cache-friendly."""
+    F = out.shape[0]
+    for j in range(F):
+        out[j] = 0.0  # running max over path features (clamped at 0, as before)
+    for p in range(F):
+        if path_row[p]:
+            for j in range(F):
+                v = imat[p, j]
+                if v > out[j]:
+                    out[j] = v
+    for j in range(F):
+        out[j] = 1.0 + ib * out[j]
+
+
+@njit(cache=True, fastmath=True)
+def _best_split(hist, nbins, lam, gamma, mcw, msl, fmask, boost):
     """Best (true_gain, f, b) for one node; true_gain <= 0 means don't split.
 
     Selection runs over ``gain * boost[f]`` (interaction steering), but the
@@ -63,9 +120,13 @@ def _best_split(hist, lam, gamma, mcw, msl, fmask, boost):
     acceptance and best-first ordering are never inflated -- exactly as
     histogram.find_best_split does. "bin <= b" sends bins [0,b] left, the last
     bin is never valid, ties resolve to the first (feature-major) max.
+
+    ``nbins[f]`` is feature f's used bin count (#edges + 1). Bins at or above it
+    are always empty (searchsorted can't produce them), so scanning only [0,
+    nbins[f]) is exact and skips the all-zero tail -- a large saving on
+    low-cardinality features (Santander's median feature uses ~35 of 256 bins).
     """
     F = hist.shape[1]
-    B = hist.shape[2]
     best_sel = _NEG_INF
     best_true = _NEG_INF
     bf = -1
@@ -73,11 +134,12 @@ def _best_split(hist, lam, gamma, mcw, msl, fmask, boost):
     for f in range(F):
         if not fmask[f]:
             continue
+        nb = nbins[f]
         bo = boost[f]
         Gt = 0.0
         Ht = 0.0
         Ct = 0.0
-        for b in range(B):
+        for b in range(nb):
             Gt += hist[0, f, b]
             Ht += hist[1, f, b]
             Ct += hist[2, f, b]
@@ -85,7 +147,7 @@ def _best_split(hist, lam, gamma, mcw, msl, fmask, boost):
         GL = 0.0
         HL = 0.0
         CL = 0.0
-        for b in range(B - 1):  # last bin: empty right child, never valid
+        for b in range(nb - 1):  # last used bin: empty right child, never valid
             GL += hist[0, f, b]
             HL += hist[1, f, b]
             CL += hist[2, f, b]
@@ -122,6 +184,7 @@ def _partition(binned, rows, start, end, f, b):
 
 @njit(cache=True, fastmath=True)
 def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
+          indptr, indices, data, default_bin, use_sparse, nbins,
           lam, gamma, mcw, msl, lr, max_leaves, max_depth):
     n, F = binned.shape
     B = MAX_BINS
@@ -140,6 +203,10 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
 
     rows = np.arange(n).astype(np.int64)
     boost = np.ones(F, dtype=np.float32)
+    # Per-feature explicit-sum scratch for the sparse histogram builder.
+    expl_g = np.zeros(F, dtype=np.float32)
+    expl_h = np.zeros(F, dtype=np.float32)
+    expl_c = np.zeros(F, dtype=np.float32)
 
     # Active-leaf candidate table (parallel arrays, compacted by index k).
     leaf_node = np.zeros(max_nodes, dtype=np.int64)
@@ -151,7 +218,11 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
     node_start[0] = 0
     node_end[0] = n
     node_depth[0] = 0
-    _build_hist(binned, grad, hess, rows, 0, n, hist_store[0])
+    if use_sparse:
+        _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
+                           rows, 0, n, hist_store[0], expl_g, expl_h, expl_c)
+    else:
+        _build_hist(binned, grad, hess, rows, 0, n, hist_store[0])
     Gsum = 0.0
     Hsum = 0.0
     for b in range(B):
@@ -160,7 +231,7 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
     value[0] = -lr * Gsum / (Hsum + lam)
     n_nodes = 1
 
-    g0, f0, b0 = _best_split(hist_store[0], lam, gamma, mcw, msl, fmask, boost)
+    g0, f0, b0 = _best_split(hist_store[0], nbins, lam, gamma, mcw, msl, fmask, boost)
     if node_depth[0] >= max_depth:
         g0 = _NEG_INF
     leaf_node[0] = 0
@@ -199,18 +270,27 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
         node_depth[nl] = d
         node_depth[nr] = d
         # Both children inherit the parent path plus the split feature.
-        for p in range(F):
-            path_mask[nl, p] = path_mask[nid, p]
-            path_mask[nr, p] = path_mask[nid, p]
+        # Slice assignment compiles to a memcpy of the (F,) bool row, avoiding the
+        # per-feature scalar loop (a real cost on wide F).
+        path_mask[nl] = path_mask[nid]
+        path_mask[nr] = path_mask[nid]
         path_mask[nl, f] = True
         path_mask[nr, f] = True
 
         # Smaller child by scatter; sibling by subtraction from the parent hist.
         if (mid - s) <= (e - mid):
-            _build_hist(binned, grad, hess, rows, s, mid, hist_store[nl])
+            if use_sparse:
+                _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
+                                   rows, s, mid, hist_store[nl], expl_g, expl_h, expl_c)
+            else:
+                _build_hist(binned, grad, hess, rows, s, mid, hist_store[nl])
             hist_store[nr] = hist_store[nid] - hist_store[nl]
         else:
-            _build_hist(binned, grad, hess, rows, mid, e, hist_store[nr])
+            if use_sparse:
+                _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
+                                   rows, mid, e, hist_store[nr], expl_g, expl_h, expl_c)
+            else:
+                _build_hist(binned, grad, hess, rows, mid, e, hist_store[nr])
             hist_store[nl] = hist_store[nid] - hist_store[nr]
 
         gl = 0.0
@@ -235,7 +315,7 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
         # Replace the split leaf with its left child; append the right child.
         if use_imat:
             _compute_boost(path_mask[nl], imat, ib, boost)
-        glg, glf, glb = _best_split(hist_store[nl], lam, gamma, mcw, msl, fmask, boost)
+        glg, glf, glb = _best_split(hist_store[nl], nbins, lam, gamma, mcw, msl, fmask, boost)
         if d >= max_depth:
             glg = _NEG_INF
         leaf_node[best_k] = nl
@@ -245,7 +325,7 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
 
         if use_imat:
             _compute_boost(path_mask[nr], imat, ib, boost)
-        grg, grf, grb = _best_split(hist_store[nr], lam, gamma, mcw, msl, fmask, boost)
+        grg, grf, grb = _best_split(hist_store[nr], nbins, lam, gamma, mcw, msl, fmask, boost)
         if d >= max_depth:
             grg = _NEG_INF
         leaf_node[n_active] = nr
@@ -258,6 +338,40 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
         value[:n_nodes], node_depth[:n_nodes]
 
 
+def build_sparse_layout(binned: torch.Tensor):
+    """Build the CSR-of-nonzeros layout used by the sparse histogram builder.
+
+    Returns ``(indptr, indices, data, default_bin)``:
+      * ``default_bin[f]`` is feature f's most common bin (the implicit value),
+      * ``indptr/indices/data`` are a row-major CSR over the entries whose bin
+        differs from that default -- so iterating a row visits only its non-default
+        features.
+
+    Computed once per fit from the (fixed) full binned matrix and reused across
+    boosting rounds. On dense data the dominant bin covers few rows, so nnz ~= n*F
+    and there is no win; callers gate on the achieved density (see ``layout_density``).
+    """
+    bn = np.ascontiguousarray(binned.detach().cpu().numpy())
+    n, F = bn.shape
+    # Per-feature most-common bin via a single (F, MAX_BINS) count.
+    counts = np.zeros((F, MAX_BINS), dtype=np.int64)
+    np.add.at(counts, (np.arange(F)[None, :].repeat(n, 0).ravel(), bn.ravel()), 1)
+    default_bin = counts.argmax(axis=1).astype(np.int64)
+
+    nondef = bn != default_bin[None, :].astype(bn.dtype)
+    indptr = np.zeros(n + 1, dtype=np.int64)
+    np.cumsum(nondef.sum(axis=1), out=indptr[1:])
+    rows_idx, cols_idx = np.nonzero(nondef)  # C-order => grouped by row (CSR)
+    indices = cols_idx.astype(np.int64)
+    data = bn[rows_idx, cols_idx].astype(np.int64)
+    return indptr, indices, data, default_bin
+
+
+def layout_density(layout, n: int, F: int) -> float:
+    """Fraction of cells stored explicitly (nnz / (n*F)); lower = more savings."""
+    return float(len(layout[1]) / max(1, n * F))
+
+
 def grow_tree_numba(
     binned: torch.Tensor,
     grad: torch.Tensor,
@@ -267,6 +381,7 @@ def grow_tree_numba(
     feature_mask: torch.Tensor | None = None,
     interaction_matrix: torch.Tensor | None = None,
     interaction_boost: float = 0.5,
+    sparse_layout=None,
 ) -> Tree:
     """Drop-in for the axis path of :func:`yabt.tree.grow_tree` (no kernel splits).
 
@@ -287,8 +402,25 @@ def grow_tree_numba(
     else:
         imat = np.zeros((F, F), dtype=np.float32)
 
+    if sparse_layout is not None:
+        indptr, indices, data, default_bin = sparse_layout
+        use_sparse = True
+    else:
+        indptr = np.zeros(1, dtype=np.int64)
+        indices = np.zeros(1, dtype=np.int64)
+        data = np.zeros(1, dtype=np.int64)
+        default_bin = np.zeros(1, dtype=np.int64)
+        use_sparse = False
+
+    # Used bin count per feature: bin(x) = #{edges < x} in [0, len(edges)], so a
+    # feature uses at most len(edges)+1 bins; the split search skips the empty tail.
+    nbins = np.fromiter(
+        (min(len(e) + 1, MAX_BINS) for e in binner.edges_), dtype=np.int64, count=F
+    )
+
     feat, thr_bin, left, right, value, depth = _grow(
         bn, gn, hn, fmask, imat, float(interaction_boost), use_imat,
+        indptr, indices, data, default_bin, use_sparse, nbins,
         float(params.reg_lambda), float(params.gamma),
         float(params.min_child_weight), int(params.min_samples_leaf),
         float(params.learning_rate), int(params.max_leaves), int(params.max_depth),

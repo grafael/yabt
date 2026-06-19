@@ -156,6 +156,16 @@ class BoostParams:
     # the level-wise path, or when kernel_splits is on (unsupported). True/False
     # force it on/off (True still falls back where unsupported).
     numba_grower: bool | str = "auto"
+    # Sparse histogram build for the Numba grower: store only each feature's
+    # non-default (non-modal) bins and fill the default bin by subtraction, so a
+    # histogram costs O(node_nnz + F) instead of O(node_rows * F). The whole win
+    # is on wide, sparse data (e.g. Santander: 4991 features, 97% zero). "auto"
+    # builds the layout once and uses it only when the achieved density is below
+    # sparse_hist_max_density AND rows are not subsampled (the layout is over the
+    # full row set); True/False force it. Falls back to the dense builder on dense
+    # data, where there is no win.
+    sparse_hist: bool | str = "auto"
+    sparse_hist_max_density: float = 0.5
     # Training control
     early_stopping_rounds: int = 0
     seed: int = 0
@@ -181,6 +191,26 @@ class Booster:
         self.interaction_detector: FeatureInteractionDetector | None = None
         self.tuning_report_: dict | None = None
         self.product_spec_: list[tuple[int, ...]] = []
+        self._sparse_layout = None        # cached CSR layout for the sparse grower
+        self._sparse_decided = False      # whether "auto" gating has been resolved
+
+    def _get_sparse_layout(self, binned, n, F):
+        """Lazily build and cache the sparse histogram layout; gate "auto" on the
+        achieved density. Returns the layout or None (use the dense builder)."""
+        if self._sparse_decided:
+            return self._sparse_layout
+        from .grow_numba import build_sparse_layout, layout_density
+        layout = build_sparse_layout(binned)
+        if self.p.sparse_hist is True:
+            self._sparse_layout = layout
+        else:  # "auto": keep only when it actually saves work
+            dens = layout_density(layout, n, F)
+            self._sparse_layout = layout if dens <= self.p.sparse_hist_max_density else None
+            if self.p.verbose:
+                kept = self._sparse_layout is not None
+                print(f"[sparse-hist] density={dens:.3f} -> {'sparse' if kept else 'dense'}")
+        self._sparse_decided = True
+        return self._sparse_layout
 
     def _tree_params(self) -> TreeParams:
         p = self.p
@@ -349,9 +379,16 @@ class Booster:
                                            interaction_boost=p.interaction_boost)
             elif use_numba:
                 from .grow_numba import grow_tree_numba
+                # Sparse histogram layout: built once over the full binned matrix
+                # and reused; only valid when rows are not subsampled (the layout
+                # is keyed by global row id). "auto" keeps it only if dense enough.
+                sl = None
+                if p.sparse_hist is not False and rows is None:
+                    sl = self._get_sparse_layout(binned, n, F)
                 tree = grow_tree_numba(gb, gg2, gh2, self.binner, tp, fmask,
                                        interaction_matrix=imat,
-                                       interaction_boost=p.interaction_boost)
+                                       interaction_boost=p.interaction_boost,
+                                       sparse_layout=sl)
             elif rows is not None:
                 Xn_t = Xn[rows] if Xn is not None else None
                 tree = grow_tree(gb, gg2, gh2, self.binner, tp, fmask, Xnorm=Xn_t,

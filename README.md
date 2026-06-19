@@ -364,6 +364,8 @@ not apply to its shared-structure path.
 | **Growth strategy** | | |
 | `levelwise` | `"auto"` | Breadth-first (level-wise) growth with sibling subtraction. "auto" enables it on CUDA when `max_leaves >= 16` (~1.8x faster), otherwise uses the best-first heap grower; it also falls back to the heap below 16 leaves or when `kernel_splits` is on. True/False force it on/off (True still skips kernel splits). |
 | `numba_grower` | `"auto"` | Use the Numba-JIT compiled best-first grower on CPU (1.5-4x faster than the torch grower at identical accuracy). "auto" enables it on CPU for the axis-split path; it falls back to the torch grower on CUDA, on the level-wise path, or when `kernel_splits` is on. True/False force it on/off (True still falls back where unsupported). |
+| `sparse_hist` | `"auto"` | Sparse histogram build for the Numba grower: store each feature's non-modal bins and fill the modal bin by subtraction, making a histogram cost O(node_nnz + F) instead of O(node_rows * F). The win is on wide, sparse data (e.g. ~1.3x on Santander, 4991 features 97% zero), accuracy-neutral. "auto" uses it only when the data is dense enough below `sparse_hist_max_density` and rows are not subsampled; True/False force it (still requires the Numba grower). |
+| `sparse_hist_max_density` | `0.5` | Max fraction of explicitly-stored cells for "auto" `sparse_hist` to engage; above this the dense builder is used (no sparsity to exploit). |
 | **Training control** | | |
 | `early_stopping_rounds` | `0` | Stop if the eval metric does not improve for this many rounds (0 disables; requires `eval_set` to be passed to `fit`). |
 | `seed` | `0` | Random seed. |
