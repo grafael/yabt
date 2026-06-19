@@ -185,6 +185,22 @@ def score(task, y_true, y_pred):
     return r2_score(y_true, y_pred)
 
 
+def warmup_yabt(devices):
+    """Trigger YABT's one-time Numba-JIT compile (and module import) on a tiny
+    throwaway fit, so the first real dataset isn't charged for JIT warmup.
+
+    The Numba CPU grower (numba_grower="auto") compiles its njit kernels on the
+    first fit in the process — ~0.3s — which would otherwise inflate only the
+    first dataset's YABT time versus the precompiled C++ baselines.
+    """
+    rng = np.random.RandomState(0)
+    X = rng.rand(64, 4).astype(np.float32)
+    y = (X[:, 0] > 0.5).astype(np.float32)
+    for dev in devices:
+        d = "cuda" if dev == "gpu" else "cpu"
+        YABTRegressor(n_estimators=2, max_leaves=4, device=d).fit(X, y)
+
+
 def run_dataset(tag, did, name, task, seeds, max_rows, devices):
     """Return {model: {device: {scores: [...], times: [...]}}} for one dataset."""
     X, y, cat_idx, _ = load_dataset(did, task, max_rows=max_rows, seed=0)
@@ -254,6 +270,8 @@ def main():
     print(f"Models: {', '.join(model_builders())}")
     print(f"Config: {NTREES} trees, lr={LR}, depth={DEPTH} | seeds={seeds} | "
           f"max_rows={args.max_rows} | devices={', '.join(devices)}\n")
+
+    warmup_yabt(devices)  # pay YABT's one-time Numba-JIT warmup before timing
 
     results = {}
     for tag in tags:
