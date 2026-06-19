@@ -115,12 +115,17 @@ hundreds of trees.
 
 ## Benchmark results
 
-On the numeric-regression suite from Grinsztajn et al. (2022) — 19 OpenML
-datasets, all four libraries run with matched defaults (100 trees, lr 0.1,
-depth 6) on the same GPU — YABT has the best test $R^2$ on most datasets, at
-the cost of higher per-tree wall-clock time:
+Across 92 datasets from six OpenML suites — the Grinsztajn et al. (2022)
+numeric/categorical classification and regression suites plus the CTR23 and
+AMLB regression suites — all five libraries (YABT, XGBoost, LightGBM, CatBoost,
+HistGBM) run with matched defaults (100 trees, lr 0.1, depth 6) on the same
+GPU. Models are scored with $R^2$ on the 73 regression datasets and accuracy on
+the 19 classification datasets (both higher-is-better). YABT has the best score
+on more datasets than any other library — 37 of 92: an outright win on 32 (the
+green cells below) plus a tie for best on 5 more (yellow) — at the cost of
+higher per-tree wall-clock time:
 
-![OpenML numeric-regression results](benchmarks/openml_regression.png)
+![OpenML benchmark results](benchmarks/openml_regression.png)
 
 ### Reproducing the numbers
 
@@ -128,13 +133,14 @@ The table is rendered from `benchmarks/openml_benchmark_results.json`, which is
 produced by the benchmark harness. From the `benchmarks/` directory:
 
 ```bash
-python openml_benchmark.py --suite num_reg --seeds 3 --device gpu
+python openml_benchmark.py --suite all --seeds 3 --device gpu
 ```
 
 This loads each dataset, runs every library over three train/test splits, and
-writes the mean $R^2$ and fit time per model back to the JSON (use
-`--device cpu` if you have no CUDA device; `--list` shows the datasets). The
-figure is a LaTeX rendering of that JSON.
+writes the mean score ($R^2$ for regression, accuracy for classification) and
+fit time per model back to the JSON (use `--device cpu` if you have no CUDA
+device; `--suite num_reg` runs a single suite, `--list` shows the datasets).
+The figure is a LaTeX rendering of that JSON.
 
 ## Kernel-based splits
 

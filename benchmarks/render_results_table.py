@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Render benchmarks/openml_regression.png from openml_benchmark_results.json.
 
-Produces a publication-quality table image of the OpenML numeric-regression
-suite: per dataset and per model the test R^2 (higher is better) and wall-clock
-fit time t in seconds (lower is better). The best R^2 and the fastest t in each
-row are bolded.
+Produces a publication-quality table image of the OpenML benchmark suites: per
+dataset and per model the test score (R^2 for the regression suites, accuracy
+for the classification suites; higher is better either way) and wall-clock fit
+time t in seconds (lower is better). The best score and the fastest t in each
+row are bolded, and YABT's score cell is shaded when it wins the row.
 
 The table is typeset with LaTeX (booktabs) and compiled to PDF with Tectonic,
 then rasterized to PNG with pdftocairo -- giving a clean research aesthetic
@@ -65,7 +66,7 @@ def build_tex(data):
         start += 2
     cmid_line = "".join(cmids)
 
-    sub_heads = " & ".join([r"$R^2$ & $t$"] * n_models)
+    sub_heads = " & ".join([r"score & $t$"] * n_models)
     n_cols = 3 + 2 * n_models
 
     body = []
@@ -79,31 +80,41 @@ def build_tex(data):
             r2s.append(md.get("mean", float("nan")))
             times.append(md.get("time", float("nan")))
 
-        best_r2 = max(range(n_models), key=lambda i: (r2s[i] != r2s[i], r2s[i]))
         best_t = min(range(n_models), key=lambda i: (times[i] != times[i], times[i]))
 
-        # YABT (column 0) wins the row when it has the strictly-or-equal best
-        # R^2 and that value is real; shade its R^2 cell to make wins pop.
-        yabt_wins = best_r2 == 0 and r2s[0] == r2s[0]
+        # Best score per row, by *displayed* value so visually-equal cells count
+        # as a tie. ``best`` is the set of winning columns: a single index is an
+        # outright win, two or more is a draw. Cells with no data never win.
+        real = [i for i in range(n_models) if r2s[i] == r2s[i]]
+        best = set()
+        if real:
+            top = max(format(r2s[i], ".3f") for i in real)
+            best = {i for i in real if format(r2s[i], ".3f") == top}
+        draw = len(best) > 1
+        # Shade winners: yellow on a draw (every tied algo), else green only when
+        # YABT (column 0) is the sole winner. A non-YABT outright win is bold only.
+        win_color = "draw" if draw else ("yabtwin" if best == {0} else None)
 
         cells = [name, str(rec.get("n", "")), str(rec.get("p", ""))]
         for i in range(n_models):
-            cell = num(r2s[i], ".3f", i == best_r2)
-            if i == 0 and yabt_wins:
-                cell = r"\cellcolor{yabtwin}" + cell
+            cell = num(r2s[i], ".3f", i in best)
+            if i in best and win_color is not None:
+                cell = r"\cellcolor{%s}" % win_color + cell
             cells.append(cell)
             cells.append(num(times[i], ".2f", i == best_t))
         body.append(" & ".join(cells) + r" \\")
 
-    title1 = r"\textbf{\large OpenML numeric-regression benchmark suite}"
+    title1 = r"\textbf{\large OpenML benchmark suite}"
     title2 = (
-        r"\small Test $R^2$ (higher is better) and wall-clock fit time "
-        r"$t$ in seconds (lower is better), \textsc{gpu}"
+        r"\small Test score ($R^2$ for regression, accuracy for classification; "
+        r"higher is better) and wall-clock fit time $t$ in seconds (lower is "
+        r"better), \textsc{gpu}"
     )
     foot = (
-        r"\footnotesize\color{rulegray} Best $R^2$ and fastest $t$ per "
-        r"dataset in \textbf{bold}; \colorbox{yabtwin}{green} marks a YABT "
-        r"$R^2$ win.\quad $n$: samples,\; $p$: features."
+        r"\footnotesize\color{rulegray} Best score and fastest $t$ per "
+        r"dataset in \textbf{bold}; \colorbox{yabtwin}{green} marks an outright "
+        r"YABT win, \colorbox{draw}{yellow} a tie for best.\quad "
+        r"$n$: samples,\; $p$: features."
     )
 
     tex = r"""\documentclass[border=14pt]{standalone}
@@ -114,6 +125,7 @@ def build_tex(data):
 \usepackage[table]{xcolor}
 \definecolor{rulegray}{gray}{0.45}
 \definecolor{yabtwin}{HTML}{C8E6C9}
+\definecolor{draw}{HTML}{FFF59D}
 \begin{document}
 \setlength{\tabcolsep}{6pt}
 \renewcommand{\arraystretch}{1.2}
