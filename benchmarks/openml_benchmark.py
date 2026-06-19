@@ -63,8 +63,14 @@ except ImportError:
 NTREES, LR, DEPTH, LEAVES = 100, 0.1, 6, 31
 
 
-def _cat_frame(X: pd.DataFrame, cat_idx, as_int=False) -> pd.DataFrame:
-    """Return a copy with categorical columns typed for native handling."""
+def _cat_frame(X: pd.DataFrame, cat_idx, cat_cats=None, as_int=False) -> pd.DataFrame:
+    """Return a copy with categorical columns typed for native handling.
+
+    ``cat_cats`` maps a column index to the full set of category codes seen in
+    the *whole* dataset. Using it pins the ``category`` dtype to a fixed universe
+    so a train/test split that happens to omit a rare code (common with sparse
+    binary columns) doesn't make a model reject an unseen test category.
+    """
     if not cat_idx:
         return X
     Xc = X.copy()
@@ -74,13 +80,15 @@ def _cat_frame(X: pd.DataFrame, cat_idx, as_int=False) -> pd.DataFrame:
         # integers (XGBoost rejects float-typed categories).
         Xc[col] = Xc[col].astype("int64")
         if not as_int:
-            Xc[col] = Xc[col].astype("category")
+            dtype = ("category" if cat_cats is None
+                     else pd.CategoricalDtype(categories=cat_cats[i]))
+            Xc[col] = Xc[col].astype(dtype)
     return Xc
 
 
 # Each builder takes device in {"cpu", "gpu"} and returns (fit_fn, predict_fn).
 # fit_fn(Xtr, ytr) -> fitted model; predict_fn(model, Xte) -> labels (clf) or values (reg).
-def _yabt(task, device, cat_idx):
+def _yabt(task, device, cat_idx, cat_cats):
     Est = YABTClassifier if task == "clf" else YABTRegressor
     dev = "cuda" if device == "gpu" else "cpu"
     def fit(Xtr, ytr):
@@ -92,35 +100,43 @@ def _yabt(task, device, cat_idx):
     return fit, pred
 
 
-def _xgb(task, device, cat_idx):
+def _xgb(task, device, cat_idx, cat_cats):
     Est = xgb.XGBClassifier if task == "clf" else xgb.XGBRegressor
     dev = "cuda" if device == "gpu" else "cpu"
     def fit(Xtr, ytr):
         m = Est(n_estimators=NTREES, learning_rate=LR, max_depth=DEPTH, device=dev,
                 enable_categorical=bool(cat_idx), tree_method="hist",
                 random_state=0, verbosity=0)
-        m.fit(_cat_frame(Xtr, cat_idx), ytr)
+        m.fit(_cat_frame(Xtr, cat_idx, cat_cats), ytr)
         return m
     def pred(m, Xte):
-        return m.predict(_cat_frame(Xte, cat_idx))
+        return m.predict(_cat_frame(Xte, cat_idx, cat_cats))
     return fit, pred
 
 
-def _lgb(task, device, cat_idx):
+def _lgb(task, device, cat_idx, cat_cats):
     Est = lgb.LGBMClassifier if task == "clf" else lgb.LGBMRegressor
     dev = "gpu" if device == "gpu" else "cpu"
+    # categoricals are specified by integer index, so neutralizing the column
+    # names is safe (LightGBM rejects JSON-special chars in feature names).
     cat_cols = [int(i) for i in cat_idx] if cat_idx else "auto"
+    def _safe(X):
+        Xc = _cat_frame(X, cat_idx, cat_cats)
+        if Xc is X:  # _cat_frame returns the input as-is when there are no cats
+            Xc = X.copy()
+        Xc.columns = [f"f{i}" for i in range(Xc.shape[1])]
+        return Xc
     def fit(Xtr, ytr):
         m = Est(n_estimators=NTREES, learning_rate=LR, max_depth=DEPTH, num_leaves=LEAVES,
                 device=dev, random_state=0, verbosity=-1)
-        m.fit(_cat_frame(Xtr, cat_idx), ytr, categorical_feature=cat_cols)
+        m.fit(_safe(Xtr), ytr, categorical_feature=cat_cols)
         return m
     def pred(m, Xte):
-        return m.predict(_cat_frame(Xte, cat_idx))
+        return m.predict(_safe(Xte))
     return fit, pred
 
 
-def _cat(task, device, cat_idx):
+def _cat(task, device, cat_idx, cat_cats):
     Est = cat.CatBoostClassifier if task == "clf" else cat.CatBoostRegressor
     task_type = "GPU" if device == "gpu" else "CPU"
     def fit(Xtr, ytr):
@@ -134,7 +150,7 @@ def _cat(task, device, cat_idx):
     return fit, pred
 
 
-def _hgb(task, device, cat_idx):
+def _hgb(task, device, cat_idx, cat_cats):
     # scikit-learn HistGradientBoosting: CPU-only (ignores `device`), native
     # categorical handling and missing-value support. High-cardinality
     # categoricals (> max_bins) raise at fit and are caught per-model upstream.
@@ -172,6 +188,9 @@ def score(task, y_true, y_pred):
 def run_dataset(tag, did, name, task, seeds, max_rows, devices):
     """Return {model: {device: {scores: [...], times: [...]}}} for one dataset."""
     X, y, cat_idx, _ = load_dataset(did, task, max_rows=max_rows, seed=0)
+    # full-dataset category universe per categorical column, so every train/test
+    # split shares an identical `category` dtype (see _cat_frame).
+    cat_cats = {i: np.unique(X.iloc[:, i].astype("int64").to_numpy()) for i in cat_idx}
     builders = model_builders()
     out = {m: {dev: {"scores": [], "times": []} for dev in devices} for m in builders}
 
@@ -183,7 +202,7 @@ def run_dataset(tag, did, name, task, seeds, max_rows, devices):
         Xte = Xte.reset_index(drop=True)
         for dev in devices:
             for mname, builder in builders.items():
-                fit, pred = builder(task, dev, cat_idx)
+                fit, pred = builder(task, dev, cat_idx, cat_cats)
                 try:
                     t0 = time.time()
                     model = fit(Xtr, ytr)
