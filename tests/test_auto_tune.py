@@ -43,10 +43,20 @@ def test_auto_tune_not_much_worse_than_default():
 
 
 def test_auto_tune_skipped_on_tiny_data():
-    X, y = _classification(300, seed=2)
+    X, y = _classification(120, seed=2)  # below MIN_ROWS_CV: too few even for CV
     clf = YABTClassifier(n_estimators=30, auto_tune=True, refine_steps=0, seed=0).fit(X, y)
     assert clf.booster_.tuning_report_ is None
     assert clf.booster_.p.auto_tune is False  # no recursive tuning state left
+
+
+def test_auto_tune_small_data_uses_cv():
+    # between MIN_ROWS_CV and MIN_ROWS_TO_TUNE: tuned via k-fold CV, not skipped
+    X, y = _classification(400, seed=6)
+    clf = YABTClassifier(n_estimators=40, auto_tune=True, refine_steps=0, seed=0).fit(X, y)
+    rep = clf.booster_.tuning_report_
+    assert rep is not None
+    assert rep["scoring"] == "cv"
+    assert rep["selected"] in [r["name"] for r in rep["results"]]
 
 
 def test_auto_tune_uses_external_eval_set():

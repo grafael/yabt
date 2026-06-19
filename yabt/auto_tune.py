@@ -15,7 +15,9 @@ import torch
 
 SEARCH_MAX_ESTIMATORS = 300
 VAL_FRACTION = 0.2
-MIN_ROWS_TO_TUNE = 600  # below this a validation split is too noisy to trust
+MIN_ROWS_TO_TUNE = 600  # at/above this a single holdout split is trustworthy
+MIN_ROWS_CV = 150       # below MIN_ROWS_TO_TUNE but at/above this: use k-fold CV
+CV_FOLDS = 3
 
 
 def _candidates(n: int) -> list[tuple[str, dict]]:
@@ -25,11 +27,26 @@ def _candidates(n: int) -> list[tuple[str, dict]]:
         ("fast-shallow", {"learning_rate": 0.2, "max_leaves": 15}),
         ("constant-leaves", {"neural_leaves": False}),       # sharp-boundary data
         ("strong-interactions", {"interaction_boost": 1.0}),  # interaction-heavy data
+        # low-signal/noisy targets: a min-gain floor refuses to split on noise.
+        # A global gamma is net-negative suite-wide (it wrecks high-signal smooth
+        # targets), but validation-gating deploys it only where it actually wins.
+        ("regularized-splits", {"gamma": 1.0, "max_leaves": 15}),
         ("fine-grain", {"min_samples_leaf": 5, "max_leaves": 63}),
     ]
     if n < 5000:
         cands = [c for c in cands if c[0] != "fine-grain"]  # overfits small data
     return cands
+
+
+def _val_loss(params, loss, over, search_estimators, Xtr, ytr, Xv, yv_t) -> float:
+    """Fit one candidate to a fixed tree count and score it on a holdout."""
+    from .boosting import Booster  # local import: boosting imports this module
+
+    p = replace(params, auto_tune=False, n_estimators=search_estimators,
+                early_stopping_rounds=0, verbose=False, **over)
+    b = Booster(p, loss).fit(Xtr, ytr)
+    margin = torch.as_tensor(b.predict_margin(Xv), dtype=torch.float32)
+    return float(loss.loss(margin, yv_t))
 
 
 def tune_params(
@@ -46,38 +63,51 @@ def tune_params(
     candidate's early-stop point and deploying at full length measurably
     mis-selected in A/Bs (a fast config can win at its plateau while a slower
     one keeps improving). The final fit keeps the caller's n_estimators.
-    With an external eval_set the candidates are fit on all of X and scored
-    on it.
-    """
-    from .boosting import Booster  # local import: boosting imports this module
 
+    Scoring split: an external eval_set is used directly; data at/above
+    MIN_ROWS_TO_TUNE uses a single holdout; smaller data (down to MIN_ROWS_CV,
+    too noisy for one split) uses CV_FOLDS-fold cross-validation.
+    """
     n = X.shape[0]
-    if n < MIN_ROWS_TO_TUNE or params.n_estimators < 20:
+    if params.n_estimators < 20 or (eval_set is None and n < MIN_ROWS_CV):
         return replace(params, auto_tune=False), None
 
+    # Build the (train, val) folds candidates are scored on. Large data uses one
+    # holdout; small data (too noisy for a single split) uses k-fold CV; an
+    # external eval_set is always used directly. Each fold is
+    # (Xtr, ytr, Xval, yval_tensor).
     if eval_set is not None:
-        Xtr, ytr = X, y
-        Xv, yv = np.asarray(eval_set[0]), np.asarray(eval_set[1], dtype=np.float32)
-    else:
+        yv = np.asarray(eval_set[1], dtype=np.float32)
+        folds = [(X, y, np.asarray(eval_set[0]), torch.as_tensor(yv, dtype=torch.float32))]
+        scoring = "eval_set"
+    elif n >= MIN_ROWS_TO_TUNE:
         rng = np.random.default_rng(params.seed)
         m = min(max(150, int(n * VAL_FRACTION)), n // 2)
         perm = rng.permutation(n)
-        Xtr, ytr = X[perm[m:]], y[perm[m:]]
-        Xv, yv = X[perm[:m]], y[perm[:m]]
+        folds = [(X[perm[m:]], y[perm[m:]], X[perm[:m]],
+                  torch.as_tensor(y[perm[:m]], dtype=torch.float32))]
+        scoring = "holdout"
+    else:
+        rng = np.random.default_rng(params.seed)
+        chunks = np.array_split(rng.permutation(n), CV_FOLDS)
+        folds = []
+        for i, te in enumerate(chunks):
+            tr = np.concatenate([chunks[j] for j in range(CV_FOLDS) if j != i])
+            folds.append((X[tr], y[tr], X[te],
+                          torch.as_tensor(y[te], dtype=torch.float32)))
+        scoring = "cv"
 
-    yv_t = torch.as_tensor(yv, dtype=torch.float32)
     search_estimators = min(params.n_estimators, SEARCH_MAX_ESTIMATORS)
     results = []
     for name, over in _candidates(n):
-        p = replace(params, auto_tune=False, n_estimators=search_estimators,
-                    early_stopping_rounds=0, verbose=False, **over)
-        b = Booster(p, loss).fit(Xtr, ytr)
-        margin = torch.as_tensor(b.predict_margin(Xv), dtype=torch.float32)
-        vl = float(loss.loss(margin, yv_t))
+        vl = float(np.mean([
+            _val_loss(params, loss, over, search_estimators, ftr_X, ftr_y, fXv, fyv)
+            for ftr_X, ftr_y, fXv, fyv in folds]))
         results.append({"name": name, "val_loss": vl, "overrides": over})
 
     results.sort(key=lambda r: r["val_loss"])
     best = results[0]
     tuned = replace(params, auto_tune=False, **best["overrides"])
     return tuned, {"selected": best["name"], "val_loss": best["val_loss"],
-                   "n_estimators": tuned.n_estimators, "results": results}
+                   "n_estimators": tuned.n_estimators, "results": results,
+                   "scoring": scoring}
