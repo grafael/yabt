@@ -25,8 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 JSON_PATH = os.path.join(HERE, "openml_benchmark_results.json")
 PNG_PATH = os.path.join(HERE, "openml_regression.png")
 
-MODELS = ["YABT", "XGBoost", "LightGBM", "CatBoost"]
-DEVICE = "cpu"
+MODELS = ["YABT", "XGBoost", "LightGBM", "CatBoost", "HistGBM"]
+DEVICE = "gpu"
 DPI = 300
 
 
@@ -82,20 +82,28 @@ def build_tex(data):
         best_r2 = max(range(n_models), key=lambda i: (r2s[i] != r2s[i], r2s[i]))
         best_t = min(range(n_models), key=lambda i: (times[i] != times[i], times[i]))
 
+        # YABT (column 0) wins the row when it has the strictly-or-equal best
+        # R^2 and that value is real; shade its R^2 cell to make wins pop.
+        yabt_wins = best_r2 == 0 and r2s[0] == r2s[0]
+
         cells = [name, str(rec.get("n", "")), str(rec.get("p", ""))]
         for i in range(n_models):
-            cells.append(num(r2s[i], ".3f", i == best_r2))
+            cell = num(r2s[i], ".3f", i == best_r2)
+            if i == 0 and yabt_wins:
+                cell = r"\cellcolor{yabtwin}" + cell
+            cells.append(cell)
             cells.append(num(times[i], ".2f", i == best_t))
         body.append(" & ".join(cells) + r" \\")
 
     title1 = r"\textbf{\large OpenML numeric-regression benchmark suite}"
     title2 = (
         r"\small Test $R^2$ (higher is better) and wall-clock fit time "
-        r"$t$ in seconds (lower is better), \textsc{cpu}"
+        r"$t$ in seconds (lower is better), \textsc{gpu}"
     )
     foot = (
         r"\footnotesize\color{rulegray} Best $R^2$ and fastest $t$ per "
-        r"dataset in \textbf{bold}.\quad $n$: samples,\; $p$: features."
+        r"dataset in \textbf{bold}; \colorbox{yabtwin}{green} marks a YABT "
+        r"$R^2$ win.\quad $n$: samples,\; $p$: features."
     )
 
     tex = r"""\documentclass[border=14pt]{standalone}
@@ -103,8 +111,9 @@ def build_tex(data):
 \usepackage{lmodern}
 \usepackage{booktabs}
 \usepackage{amsmath}
-\usepackage{xcolor}
+\usepackage[table]{xcolor}
 \definecolor{rulegray}{gray}{0.45}
+\definecolor{yabtwin}{HTML}{C8E6C9}
 \begin{document}
 \setlength{\tabcolsep}{6pt}
 \renewcommand{\arraystretch}{1.2}
