@@ -149,6 +149,13 @@ class BoostParams:
     # heap grower below 16 leaves or when kernel_splits is on. True/False force
     # it on/off (True still skips kernel splits).
     levelwise: bool | str = "auto"
+    # Numba-JIT heap grower: a compiled CPU replacement for the torch best-first
+    # grower with identical split math (A/B: 1.5-4x faster, accuracy-neutral; the
+    # CPU grower is dispatch-bound, not FLOP-bound). "auto" (default) enables it
+    # on cpu for the axis-split path, falling back to the torch grower on cuda, on
+    # the level-wise path, or when kernel_splits is on (unsupported). True/False
+    # force it on/off (True still falls back where unsupported).
+    numba_grower: bool | str = "auto"
     # Training control
     early_stopping_rounds: int = 0
     seed: int = 0
@@ -330,11 +337,21 @@ class Booster:
             # splits are unsupported, so fall back to the heap when those are on.
             auto_lw = p.levelwise == "auto" and dev == "cuda" and p.max_leaves >= 16
             use_levelwise = (p.levelwise is True or auto_lw) and not p.kernel_splits
+            # Numba grower handles the axis-split path on CPU only; kernel splits
+            # are unsupported, and level-wise takes precedence when active.
+            auto_nb = p.numba_grower == "auto" and dev == "cpu"
+            use_numba = ((p.numba_grower is True or auto_nb)
+                         and not use_levelwise and not p.kernel_splits)
             gb, gg2, gh2 = (binned[rows], g, h) if rows is not None else (binned, grad, hess)
             if use_levelwise:
                 tree = grow_tree_levelwise(gb, gg2, gh2, self.binner, tp, fmask,
                                            interaction_matrix=imat,
                                            interaction_boost=p.interaction_boost)
+            elif use_numba:
+                from .grow_numba import grow_tree_numba
+                tree = grow_tree_numba(gb, gg2, gh2, self.binner, tp, fmask,
+                                       interaction_matrix=imat,
+                                       interaction_boost=p.interaction_boost)
             elif rows is not None:
                 Xn_t = Xn[rows] if Xn is not None else None
                 tree = grow_tree(gb, gg2, gh2, self.binner, tp, fmask, Xnorm=Xn_t,

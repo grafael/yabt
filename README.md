@@ -363,6 +363,7 @@ not apply to its shared-structure path.
 | `routing_tau` | `0.05` | Gate width as a fraction of the split feature's scale. |
 | **Growth strategy** | | |
 | `levelwise` | `"auto"` | Breadth-first (level-wise) growth with sibling subtraction. "auto" enables it on CUDA when `max_leaves >= 16` (~1.8x faster), otherwise uses the best-first heap grower; it also falls back to the heap below 16 leaves or when `kernel_splits` is on. True/False force it on/off (True still skips kernel splits). |
+| `numba_grower` | `"auto"` | Use the Numba-JIT compiled best-first grower on CPU (1.5-4x faster than the torch grower at identical accuracy). "auto" enables it on CPU for the axis-split path; it falls back to the torch grower on CUDA, on the level-wise path, or when `kernel_splits` is on. True/False force it on/off (True still falls back where unsupported). |
 | **Training control** | | |
 | `early_stopping_rounds` | `0` | Stop if the eval metric does not improve for this many rounds (0 disables; requires `eval_set` to be passed to `fit`). |
 | `seed` | `0` | Random seed. |

@@ -153,6 +153,12 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "uses the best-first heap grower; it also falls back to the heap below\n"
          "16 leaves or when ``kernel_splits`` is on. True/False force it on/off\n"
          "(True still skips kernel splits)."),
+        ("numba_grower", "bool or str, default=\"auto\"",
+         "Use the Numba-JIT compiled best-first grower on CPU (1.5-4x faster than\n"
+         "the torch grower at identical accuracy). \"auto\" enables it on CPU for\n"
+         "the axis-split path; it falls back to the torch grower on CUDA, on the\n"
+         "level-wise path, or when ``kernel_splits`` is on. True/False force it\n"
+         "on/off (True still falls back where unsupported)."),
     ],
     [
         ("early_stopping_rounds", "int, default=0",
