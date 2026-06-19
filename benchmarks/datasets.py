@@ -183,6 +183,28 @@ SUITE_DATASETS: dict[str, list[tuple[int, str, int]]] = {
 }
 
 
+# Some datasets appear under different names across suites (same underlying data,
+# different OpenML curation/id), so a case-insensitive name match doesn't catch
+# them. Map each lowercased alias to a shared canonical name so cross-suite dedup
+# treats them as one dataset. Extend this as more equivalences are found.
+DATASET_ALIASES: dict[str, str] = {
+    "superconductivity": "superconduct",
+    "cpu_activity": "cpu_act",
+    "miamihousing2016": "miami_housing",
+    # California housing: classification ("california") and regression ("houses"
+    # / "california_housing") share the same features; dedup keys on task too, so
+    # the clf and reg versions still run once each.
+    "california": "california_housing",
+    "houses": "california_housing",
+}
+
+
+def canonical_name(name: str) -> str:
+    """Lowercase ``name`` and fold known cross-suite aliases to one canonical key."""
+    key = name.lower()
+    return DATASET_ALIASES.get(key, key)
+
+
 def refresh_suites() -> dict[str, list[tuple[int, str, int]]]:
     """Re-resolve SUITE_DATASETS from the live OpenML study endpoint.
 

@@ -27,7 +27,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, r2_score
 from sklearn.model_selection import train_test_split
 
-from datasets import SUITES, list_datasets, load_dataset
+from datasets import SUITES, canonical_name, list_datasets, load_dataset
 from yabt import YABTClassifier, YABTRegressor
 
 warnings.filterwarnings("ignore")
@@ -246,6 +246,9 @@ def main():
                     help="subsample cap per dataset (Grinsztajn medium regime)")
     ap.add_argument("--max-datasets", type=int, default=None,
                     help="limit number of datasets (smallest first)")
+    ap.add_argument("--keep-duplicates", action="store_true",
+                    help="don't skip datasets that already ran in an earlier suite "
+                         "(a dataset shared across suites is benchmarked once by default)")
     ap.add_argument("--device", default="cpu", choices=["cpu", "gpu", "both"],
                     help="device for all models; 'both' times each on CPU and GPU")
     ap.add_argument("--list", action="store_true", help="list datasets and exit")
@@ -271,9 +274,12 @@ def main():
     print(f"Config: {NTREES} trees, lr={LR}, depth={DEPTH} | seeds={seeds} | "
           f"max_rows={args.max_rows} | devices={', '.join(devices)}\n")
 
+    print("Warming up YABT JIT...", end=" ", flush=True)
     warmup_yabt(devices)  # pay YABT's one-time Numba-JIT warmup before timing
+    print("done.\n")
 
     results = {}
+    seen = {}  # (name.lower(), task) -> suite tag that first ran it
     for tag in tags:
         datasets = list_datasets(tag)
         if args.max_datasets:
@@ -281,6 +287,11 @@ def main():
         metric = "accuracy" if SUITES[tag][1] == "clf" else "R²"
         print(f"{'='*70}\nSUITE {tag}  (metric: {metric})\n{'='*70}")
         for _, did, name, task in datasets:
+            key = (canonical_name(name), task)
+            if not args.keep_duplicates and key in seen:
+                print(f"  • {name} (did={did}) ... skipped (already run in suite {seen[key]})")
+                continue
+            seen[key] = tag
             print(f"  • {name} (did={did}) ...", flush=True)
             try:
                 per_model, shape, cat_idx = run_dataset(
