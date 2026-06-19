@@ -392,15 +392,25 @@ def grow_tree_levelwise(
     imat = interaction_matrix  # (F, F) in [0,1] or None; row p = how feature p interacts
 
     def scatter_hist(slot: torch.Tensor, brows: torch.Tensor, grows: torch.Tensor,
-                     hrows: torch.Tensor, K: int) -> torch.Tensor:
-        """Histogram (3, K, F, B): rows accumulate into node ``slot[i]``."""
+                     hrows: torch.Tensor, K: int,
+                     cweight: torch.Tensor | None = None) -> torch.Tensor:
+        """Histogram (3, K, F, B): rows accumulate into node ``slot[i]``.
+
+        ``cweight`` (if given) weights each row's contribution to the count
+        channel. Passing a 0/1 mask lets a full-width scatter stand in for a
+        gathered subset of rows -- avoiding the data-dependent ``nonzero`` that
+        materializing the subset's indices would need -- as long as ``grows`` and
+        ``hrows`` are pre-masked to match."""
         nr = slot.shape[0]
         flat = (slot[:, None] * (F * B) + fidx[None, :] * B + brows.long()).reshape(-1)
         out = torch.zeros(3, K * F * B, dtype=torch.float32, device=dev)
         out[0].scatter_add_(0, flat, grows[:, None].expand(nr, F).reshape(-1))
         out[1].scatter_add_(0, flat, hrows[:, None].expand(nr, F).reshape(-1))
-        ones = torch.ones((), dtype=torch.float32, device=dev).expand(nr * F)
-        out[2].scatter_add_(0, flat, ones)
+        if cweight is None:
+            ones = torch.ones((), dtype=torch.float32, device=dev).expand(nr * F)
+            out[2].scatter_add_(0, flat, ones)
+        else:
+            out[2].scatter_add_(0, flat, cweight[:, None].expand(nr, F).reshape(-1))
         return out.view(3, K, F, B)
 
     feature: list[int] = []
@@ -435,26 +445,23 @@ def grow_tree_levelwise(
 
     while active and depth < params.max_depth and splits_remaining > 0:
         M = len(active)
+        # Every row keeps its full-width slot in binned/grad/hess; rows in a
+        # finished (inactive) leaf are carried along and masked out via
+        # ``row_active`` rather than gathered away. Skipping the gather also skips
+        # the data-dependent ``nonzero`` it needs, whose host<->device sync -- not
+        # its compute -- dominated GPU tree-grow time.
         if depth == 0:
-            # Root level: every row maps to the single root node, so the
-            # active-row gather is the identity over the full (and largest)
-            # matrix. Skip it -- use binned/grad/hess directly with pr = 0.
-            arows = torch.arange(n, device=dev)
+            # Root level: every row maps to the single root node (pos 0).
             pr = torch.zeros(n, dtype=torch.long, device=dev)
-            bb, gg, hh = binned, grad, hess
+            row_active = torch.ones(n, dtype=torch.bool, device=dev)
         else:
             active_t = torch.tensor(active, dtype=torch.long, device=dev)
             node_to_pos = torch.full((len(feature),), -1, dtype=torch.long, device=dev)
             node_to_pos[active_t] = torch.arange(M, device=dev)
-            pos_of_row = node_to_pos[node_of_row]
-            # Active-row indices computed once and reused: boolean-mask indexing
-            # (binned[arows], grad[arows], ...) each runs its own nonzero kernel,
-            # so gathering with a shared integer index instead drops 3 nonzero
-            # passes per level (nonzero was ~22% of GPU tree-grow time).
-            arows = (pos_of_row >= 0).nonzero(as_tuple=True)[0]
-            pr = pos_of_row[arows]
-            bb = binned[arows]
-            gg, hh = grad[arows], hess[arows]
+            pos_of_row = node_to_pos[node_of_row]   # (n,), -1 for inactive rows
+            row_active = pos_of_row >= 0
+            pr = pos_of_row.clamp(min=0)            # inactive rows masked, not gathered
+        bb, gg, hh = binned, grad, hess
 
         cum = hist.cumsum(-1)  # fused over the (grad, hess, count) channels
         GL, HL, CL = cum[0], cum[1], cum[2]
@@ -497,10 +504,12 @@ def grow_tree_levelwise(
         child_left = [-1] * M
         child_right = [-1] * M
         next_active: list[int] = []
+        split_pos_list: list[int] = []  # active positions that split, ascending
         d1 = depth + 1
         for m in range(M):
             if not ds[m]:
                 continue
+            split_pos_list.append(m)
             gid, fm, bm = active[m], fl[m], bl[m]
             feature[gid] = fm
             threshold[gid] = binner.edge_value(fm, bm)
@@ -512,32 +521,42 @@ def grow_tree_levelwise(
             next_active += (nl, nr)
         splits_remaining -= len(next_active) // 2
 
-        # Repartition every active row in one masked write.
+        # Repartition every row in one masked full-width write; inactive rows and
+        # rows whose node didn't split keep their current slot.
         cl_t = torch.tensor(child_left, dtype=torch.long, device=dev)
         cr_t = torch.tensor(child_right, dtype=torch.long, device=dev)
         xb = bb.gather(1, f[pr, None]).squeeze(1).long()
         go_left = xb <= b[pr]
         newn = torch.where(go_left, cl_t[pr], cr_t[pr])
-        node_of_row[arows] = torch.where(do_split[pr], newn, node_of_row[arows])
+        moved = row_active & do_split[pr]
+        node_of_row = torch.where(moved, newn, node_of_row)
 
         # Build the next level's histograms: scatter only the smaller child of
         # each split; the larger sibling is parent - smaller. next_active is laid
         # out as [left0, right0, left1, right1, ...], one pair per split in
         # ascending position order, matching split_pos / the CPU loop above.
         if next_active:
-            split_pos = do_split.nonzero(as_tuple=False).squeeze(1)  # (P,) ascending
+            # split_pos (active positions that split, ascending) is already known
+            # from the host loop above, so build it directly instead of with a
+            # device nonzero and its sync.
+            split_pos = torch.tensor(split_pos_list, dtype=torch.long, device=dev)
             P = split_pos.numel()
             pos_to_pair = torch.full((M,), -1, dtype=torch.long, device=dev)
             pos_to_pair[split_pos] = torch.arange(P, device=dev)
             sil_pair = small_is_left[split_pos]                      # (P,)
             hist_parent = hist[:, split_pos]                         # (3, P, F, B)
 
+            # Smaller-child scatter over the full row width: a 0/1 mask zeroes the
+            # contribution of every row that isn't going to a smaller child,
+            # standing in for the gathered ``is_small`` subset (and adding only
+            # exact 0.0s to the other bins) without its nonzero sync.
             pair_row = pos_to_pair[pr]
-            participates = pair_row >= 0
+            participates = row_active & (pair_row >= 0)
             sil_row = sil_pair[pair_row.clamp(min=0)]
-            is_small = (participates & (go_left == sil_row)).nonzero(as_tuple=True)[0]
-            hist_small = scatter_hist(pair_row[is_small], bb[is_small],
-                                      gg[is_small], hh[is_small], P)
+            is_small = (participates & (go_left == sil_row)).to(grad.dtype)  # (n,) 0/1
+            hist_small = scatter_hist(pair_row.clamp(min=0), bb,
+                                      gg * is_small, hh * is_small, P,
+                                      cweight=is_small)
             hist_other = hist_parent - hist_small
             sil = sil_pair.view(1, P, 1, 1)
             left_hist = torch.where(sil, hist_small, hist_other)
