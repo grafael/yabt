@@ -404,13 +404,9 @@ class Booster:
                                        interaction_matrix=imat,
                                        interaction_boost=p.interaction_boost,
                                        sparse_layout=sl)
-            elif rows is not None:
-                Xn_t = Xn[rows] if Xn is not None else None
-                tree = grow_tree(gb, gg2, gh2, self.binner, tp_t, fmask, Xnorm=Xn_t,
-                                 gen=gen, kernel_weights_override=kw_override,
-                                 interaction_matrix=imat, interaction_boost=p.interaction_boost)
             else:
-                tree = grow_tree(gb, gg2, gh2, self.binner, tp_t, fmask, Xnorm=Xn,
+                Xn_t = Xn[rows] if (Xn is not None and rows is not None) else Xn
+                tree = grow_tree(gb, gg2, gh2, self.binner, tp_t, fmask, Xnorm=Xn_t,
                                  gen=gen, kernel_weights_override=kw_override,
                                  interaction_matrix=imat, interaction_boost=p.interaction_boost)
 
