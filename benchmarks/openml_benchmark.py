@@ -92,7 +92,8 @@ def _yabt(task, device, cat_idx, cat_cats):
     Est = YABTClassifier if task == "clf" else YABTRegressor
     dev = "cuda" if device == "gpu" else "cpu"
     def fit(Xtr, ytr):
-        m = Est(n_estimators=NTREES, learning_rate=LR, max_leaves=LEAVES, device=dev)
+        m = Est(n_estimators=NTREES, learning_rate=LR, max_leaves=LEAVES, device=dev,
+                neural_leaves=False, interaction_aware=False)  # EXPERIMENT: both off
         m.fit(Xtr.to_numpy(np.float32), ytr, categorical_features=cat_idx or None)
         return m
     def pred(m, Xte):

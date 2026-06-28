@@ -372,6 +372,29 @@ def layout_density(layout, n: int, F: int) -> float:
     return float(len(layout[1]) / max(1, n * F))
 
 
+def estimate_density(binned: torch.Tensor, sample_rows: int = 4096) -> float:
+    """Cheap estimate of the sparse-layout density (fraction of non-modal cells).
+
+    Building the full CSR layout just to measure density wastes work on dense
+    data (the common case), where it is then discarded. This samples up to
+    ``sample_rows`` rows and computes each feature's modal-bin fraction over the
+    sample, so the dense/sparse decision costs O(sample_rows * F) instead of a
+    full ``np.nonzero`` over the whole matrix. Sampling error on the mean
+    non-modal fraction is tiny relative to the 0.5 gate, so the decision matches
+    the exact density in all but pathological near-threshold cases.
+    """
+    bn = binned.detach().cpu().numpy()
+    n, F = bn.shape
+    if n > sample_rows:
+        idx = np.linspace(0, n - 1, sample_rows).astype(np.int64)
+        bn = bn[idx]
+    m = bn.shape[0]
+    counts = np.zeros((F, MAX_BINS), dtype=np.int64)
+    np.add.at(counts, (np.arange(F)[None, :].repeat(m, 0).ravel(), bn.ravel()), 1)
+    modal = counts.max(axis=1).sum()
+    return float(1.0 - modal / max(1, m * F))
+
+
 def grow_tree_numba(
     binned: torch.Tensor,
     grad: torch.Tensor,

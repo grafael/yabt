@@ -406,6 +406,22 @@ def grow_tree_levelwise(
     fidx = torch.arange(F, device=dev)
     imat = interaction_matrix  # (F, F) in [0,1] or None; row p = how feature p interacts
 
+    # Custom CUDA histogram kernel: the per-level (3, K, F, B) build is the
+    # grower's hot GPU op. The fused kernel does the same atomic accumulation in
+    # one launch with no (n*F) index/value materialization -- ~6x on the root and
+    # ~2x on deeper levels vs the torch scatter below. Probed once; any failure
+    # leaves cuda_build None and the torch path runs.
+    cuda_build = None
+    ones_n = None
+    if dev.type == "cuda":
+        try:
+            from .cuda_hist import is_available, build_hist
+            if is_available():
+                cuda_build = build_hist
+                ones_n = torch.ones(n, dtype=torch.float32, device=dev)
+        except Exception:
+            cuda_build = None
+
     def scatter_hist(slot: torch.Tensor, brows: torch.Tensor, grows: torch.Tensor,
                      hrows: torch.Tensor, K: int,
                      cweight: torch.Tensor | None = None) -> torch.Tensor:
@@ -416,6 +432,13 @@ def grow_tree_levelwise(
         gathered subset of rows -- avoiding the data-dependent ``nonzero`` that
         materializing the subset's indices would need -- as long as ``grows`` and
         ``hrows`` are pre-masked to match."""
+        if cuda_build is not None:
+            # ``grows``/``hrows`` are already row-masked; the count channel uses
+            # ``cweight`` (0/1 mask) or all-ones. brows must be contiguous (n, F).
+            w = cweight if cweight is not None else ones_n
+            return cuda_build(brows.contiguous(), slot.contiguous(),
+                              grows.contiguous(), hrows.contiguous(),
+                              w.contiguous(), K, F, B)
         nr = slot.shape[0]
         flat = (slot[:, None] * (F * B) + fidx[None, :] * B + brows.long()).reshape(-1)
         out = torch.zeros(3, K * F * B, dtype=torch.float32, device=dev)

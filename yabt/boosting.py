@@ -215,6 +215,7 @@ class Booster:
         self._sparse_decided = False      # whether "auto" gating has been resolved
         self._c_grower_avail = None       # cached compiler/lib probe (None=unprobed)
         self._c_grower_failed = False     # a C-grow call raised -> stop trying
+        self._binned_fmajor = None        # cached feature-major (F,n) binned for the C grower
 
     # Below this n*F the OpenMP thread spin-up outweighs the parallel speedup, so
     # "auto" keeps the single-threaded Numba grower (measured crossover; tiny
@@ -241,16 +242,18 @@ class Booster:
         achieved density. Returns the layout or None (use the dense builder)."""
         if self._sparse_decided:
             return self._sparse_layout
-        from .grow_numba import build_sparse_layout, layout_density
-        layout = build_sparse_layout(binned)
+        from .grow_numba import build_sparse_layout, estimate_density
         if self.p.sparse_hist is True:
-            self._sparse_layout = layout
-        else:  # "auto": keep only when it actually saves work
-            dens = layout_density(layout, n, F)
-            self._sparse_layout = layout if dens <= self.p.sparse_hist_max_density else None
+            self._sparse_layout = build_sparse_layout(binned)
+        else:  # "auto": estimate density cheaply, build the CSR only if it pays
+            dens = estimate_density(binned)
+            if dens <= self.p.sparse_hist_max_density:
+                self._sparse_layout = build_sparse_layout(binned)
+            else:
+                self._sparse_layout = None
             if self.p.verbose:
                 kept = self._sparse_layout is not None
-                print(f"[sparse-hist] density={dens:.3f} -> {'sparse' if kept else 'dense'}")
+                print(f"[sparse-hist] density~={dens:.3f} -> {'sparse' if kept else 'dense'}")
         self._sparse_decided = True
         return self._sparse_layout
 
@@ -444,11 +447,22 @@ class Booster:
                 if use_c and self._c_grower_ok():
                     try:
                         from .grow_c import grow_tree_c
+                        # The feature-major binned layout is constant across
+                        # rounds when rows are not subsampled, so build it once
+                        # and reuse it -- a full-matrix transpose+copy every tree
+                        # was a per-round serial tax (~7% of a bare CPU fit).
+                        bfm = None
+                        if rows is None:
+                            if self._binned_fmajor is None:
+                                self._binned_fmajor = np.ascontiguousarray(
+                                    binned.detach().cpu().numpy().T, dtype=np.uint8)
+                            bfm = self._binned_fmajor
                         grown = grow_tree_c(gb, gg2, gh2, self.binner, tp_t, fmask,
                                             interaction_matrix=imat,
                                             interaction_boost=p.interaction_boost,
                                             sparse_layout=sl,
-                                            n_threads=p.c_grower_threads)
+                                            n_threads=p.c_grower_threads,
+                                            binned_fmajor=bfm)
                     except Exception:
                         self._c_grower_failed = True  # fall back for the rest of fit
                         grown = None

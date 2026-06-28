@@ -42,6 +42,13 @@ Repository = "https://github.com/grafael/yabt"
 Issues = "https://github.com/grafael/yabt/issues"
 
 [project.optional-dependencies]
+# Optional: enables the custom CUDA histogram kernel for the GPU grower (compiled
+# on first use via torch.utils.cpp_extension, which shells out to ninja). Without
+# it the grower falls back to the torch scatter -- a perf fallback, not a
+# correctness loss -- so it is not a hard dependency.
+cuda = [
+    "ninja>=1.11",
+]
 bench = [
     "xgboost>=2.1",
     "lightgbm>=4.4",
