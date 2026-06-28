@@ -344,9 +344,15 @@ def grow_tree_c(
     interaction_boost: float = 0.5,
     sparse_layout=None,
     n_threads: int = 0,
+    binned_fmajor: np.ndarray | None = None,
 ) -> Tree:
     """Drop-in for the axis path of :func:`yabt.grow_numba.grow_tree_numba`,
-    grown by the OpenMP C kernel. ``n_threads<=0`` lets OpenMP pick (env)."""
+    grown by the OpenMP C kernel. ``n_threads<=0`` lets OpenMP pick (env).
+
+    ``binned_fmajor`` optionally supplies the feature-major (F, n) uint8 layout
+    of ``binned`` already built; the boosting loop reuses it across rounds (the
+    binned matrix is constant when rows are not subsampled), avoiding a transpose
+    + copy of the whole matrix every tree."""
     lib = _load()
     if n_threads <= 0:
         n_threads = _auto_threads()
@@ -355,7 +361,10 @@ def grow_tree_c(
 
     # Feature-major (F, n) layout: the C histogram build keeps each thread's
     # column contiguous (cache/TLB-local), the layout every hist-GBDT lib uses.
-    bn = np.ascontiguousarray(binned.detach().cpu().numpy().T, dtype=np.uint8)
+    if binned_fmajor is not None:
+        bn = binned_fmajor
+    else:
+        bn = np.ascontiguousarray(binned.detach().cpu().numpy().T, dtype=np.uint8)
     gn = np.ascontiguousarray(grad.detach().cpu().numpy(), dtype=np.float32)
     hn = np.ascontiguousarray(hess.detach().cpu().numpy(), dtype=np.float32)
     if feature_mask is None:
@@ -383,8 +392,13 @@ def grow_tree_c(
         default_bin = np.zeros(1, dtype=np.int32)
         use_sparse = 0
 
-    nbins = np.fromiter(
-        (min(len(e) + 1, MAX_BINS) for e in binner.edges_), dtype=np.int32, count=F)
+    # nbins depends only on the (fixed) binner, so cache it on the binner instead
+    # of rebuilding the Python generator every round.
+    nbins = getattr(binner, "_c_nbins", None)
+    if nbins is None or nbins.shape[0] != F:
+        nbins = np.fromiter(
+            (min(len(e) + 1, MAX_BINS) for e in binner.edges_), dtype=np.int32, count=F)
+        binner._c_nbins = nbins
 
     max_leaves = int(params.max_leaves)
     max_nodes = 2 * max_leaves + 1

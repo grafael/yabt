@@ -37,12 +37,19 @@
 static void build_hist(const uint8_t *binned, const float *grad,
                        const float *hess, const int64_t *rows, int64_t start,
                        int64_t end, float *out, int F, int B, int64_t n) {
-    memset(out, 0, (size_t)3 * F * B * sizeof(float));
+    /* The zero-fill is feature-parallel too: each thread clears only the slices
+     * it then accumulates into. Hoisting a single serial memset of the whole
+     * 3*F*B histogram out front was a real Amdahl bottleneck -- it ran for every
+     * node (incl. the many tiny ones near the leaves) on one core while the
+     * other cores idled. */
 #pragma omp parallel for schedule(static)
     for (int f = 0; f < F; f++) {
         float *og = out + (size_t)0 * F * B + (size_t)f * B;
         float *oh = out + (size_t)1 * F * B + (size_t)f * B;
         float *oc = out + (size_t)2 * F * B + (size_t)f * B;
+        memset(og, 0, (size_t)B * sizeof(float));
+        memset(oh, 0, (size_t)B * sizeof(float));
+        memset(oc, 0, (size_t)B * sizeof(float));
         const uint8_t *col = binned + (size_t)f * n;
         for (int64_t i = start; i < end; i++) {
             int64_t r = rows[i];
@@ -124,7 +131,13 @@ static double best_split(const float *hist, const int32_t *nbins, double lam,
                          const uint8_t *fmask, const float *boost, int F, int B,
                          double *fb_sel, double *fb_true, int *fb_b,
                          int *out_f, int *out_b) {
-#pragma omp parallel for schedule(dynamic, 64)
+    /* schedule(static): spread the F features across all threads. The old
+     * schedule(dynamic, 64) used a chunk size larger than the typical feature
+     * count, so a single thread grabbed the whole loop and the split search ran
+     * serially -- and it is called ~2x per node, ~60x per tree, so that was the
+     * dominant un-parallelized cost. (1 chunk-of-64 >= F means no work-stealing
+     * benefit anyway; static avoids the dynamic dispatch overhead.) */
+#pragma omp parallel for schedule(static)
     for (int f = 0; f < F; f++) {
         fb_sel[f] = NEG_INF;
         fb_true[f] = NEG_INF;
