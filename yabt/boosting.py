@@ -186,6 +186,13 @@ class BoostParams:
     # data, where there is no win.
     sparse_hist: bool | str = "auto"
     sparse_hist_max_density: float = 0.5
+    # Multiclass strategy: "softmax" grows K trees per round on the joint
+    # softmax cross-entropy gradients (shared binning, joint early stopping);
+    # "ovr" trains K independent one-vs-rest binary boosters. Softmax is the
+    # default; the classifier falls back to OvR for opt-in features the softmax
+    # loop does not support (kernel splits, GOSS, adaptive/product features,
+    # refinement/refit, auto-tune, stochastic routing).
+    multiclass: str = "softmax"
     # Training control
     early_stopping_rounds: int = 0
     seed: int = 0
@@ -267,6 +274,81 @@ class Booster:
             kernel_gamma=p.kernel_gamma, kernel_min_samples=p.kernel_min_samples,
             kernel_importance_weighting=p.kernel_importance_weighting in (True, "node"),
         )
+
+    def _grow_one_tree(self, binned, rows, g, h, tp_t, fmask, imat, gen,
+                       Xn=None, kw_override=None):
+        """Grow one tree from (already row-subsampled) grad/hess, dispatching to
+        the level-wise / C / Numba / torch grower exactly as configured. Shared
+        by the single-output fit loop and the softmax multiclass loop, so the
+        per-fit grower caches (sparse layout, feature-major binned copy) are
+        reused across every tree grown on the same binned matrix."""
+        p = self.p
+        dev = binned.device.type
+        n, F = binned.shape
+        gb = binned[rows] if rows is not None else binned
+
+        # "auto" turns level-wise on for cuda (A/B: ~1.8x faster, accuracy
+        # neutral, and it honors interaction steering), EXCEPT at small leaf
+        # budgets: with few leaves the heap's best-first order spends them
+        # more optimally on sharp-boundary/XOR data (A/B: level-wise -7.5pt at
+        # max_leaves=4, parity by 16), so defer to the heap there. Kernel
+        # splits are unsupported, so fall back to the heap when those are on.
+        auto_lw = p.levelwise == "auto" and dev == "cuda" and p.max_leaves >= 16
+        use_levelwise = (p.levelwise is True or auto_lw) and not p.kernel_splits
+        # Numba grower handles the axis-split path on CPU only; kernel splits
+        # are unsupported, and level-wise takes precedence when active.
+        auto_nb = p.numba_grower == "auto" and dev == "cpu"
+        use_numba = ((p.numba_grower is True or auto_nb)
+                     and not use_levelwise and not p.kernel_splits)
+        if use_levelwise:
+            return grow_tree_levelwise(gb, g, h, self.binner, tp_t, fmask,
+                                       interaction_matrix=imat,
+                                       interaction_boost=p.interaction_boost)
+        if use_numba:
+            from .grow_numba import grow_tree_numba
+            # Sparse histogram layout: built once over the full binned matrix
+            # and reused; only valid when rows are not subsampled (the layout
+            # is keyed by global row id). "auto" keeps it only if dense enough.
+            sl = None
+            if p.sparse_hist is not False and rows is None:
+                sl = self._get_sparse_layout(binned, n, F)
+            # Prefer the OpenMP C grower (multi-core) over single-threaded
+            # Numba when available; "auto" gates on problem size so tiny trees
+            # don't pay thread spin-up. Same kernel/output, falls back to Numba.
+            gn = gb.shape[0]
+            use_c = (p.c_grower is True or
+                     (p.c_grower == "auto" and gn * F >= self._C_GROWER_MIN_WORK))
+            if use_c and self._c_grower_ok():
+                try:
+                    from .grow_c import grow_tree_c
+                    # The feature-major binned layout is constant across
+                    # rounds when rows are not subsampled, so build it once
+                    # and reuse it -- a full-matrix transpose+copy every tree
+                    # was a per-round serial tax (~7% of a bare CPU fit).
+                    bfm = None
+                    if rows is None:
+                        if self._binned_fmajor is None:
+                            self._binned_fmajor = np.ascontiguousarray(
+                                binned.detach().cpu().numpy().T, dtype=np.uint8)
+                        bfm = self._binned_fmajor
+                    grown = grow_tree_c(gb, g, h, self.binner, tp_t, fmask,
+                                        interaction_matrix=imat,
+                                        interaction_boost=p.interaction_boost,
+                                        sparse_layout=sl,
+                                        n_threads=p.c_grower_threads,
+                                        binned_fmajor=bfm)
+                    if grown is not None:
+                        return grown
+                except Exception:
+                    self._c_grower_failed = True  # fall back for the rest of fit
+            return grow_tree_numba(gb, g, h, self.binner, tp_t, fmask,
+                                   interaction_matrix=imat,
+                                   interaction_boost=p.interaction_boost,
+                                   sparse_layout=sl)
+        Xn_t = Xn[rows] if (Xn is not None and rows is not None) else Xn
+        return grow_tree(gb, g, h, self.binner, tp_t, fmask, Xnorm=Xn_t,
+                         gen=gen, kernel_weights_override=kw_override,
+                         interaction_matrix=imat, interaction_boost=p.interaction_boost)
 
     def fit(
         self,
@@ -411,73 +493,8 @@ class Booster:
             if use_interaction_aware and self.interaction_detector is not None:
                 imat = self.interaction_detector.normalized_matrix()
 
-            # "auto" turns level-wise on for cuda (A/B: ~1.8x faster, accuracy
-            # neutral, and it honors interaction steering), EXCEPT at small leaf
-            # budgets: with few leaves the heap's best-first order spends them
-            # more optimally on sharp-boundary/XOR data (A/B: level-wise -7.5pt at
-            # max_leaves=4, parity by 16), so defer to the heap there. Kernel
-            # splits are unsupported, so fall back to the heap when those are on.
-            auto_lw = p.levelwise == "auto" and dev == "cuda" and p.max_leaves >= 16
-            use_levelwise = (p.levelwise is True or auto_lw) and not p.kernel_splits
-            # Numba grower handles the axis-split path on CPU only; kernel splits
-            # are unsupported, and level-wise takes precedence when active.
-            auto_nb = p.numba_grower == "auto" and dev == "cpu"
-            use_numba = ((p.numba_grower is True or auto_nb)
-                         and not use_levelwise and not p.kernel_splits)
-            gb, gg2, gh2 = (binned[rows], g, h) if rows is not None else (binned, grad, hess)
-            if use_levelwise:
-                tree = grow_tree_levelwise(gb, gg2, gh2, self.binner, tp_t, fmask,
-                                           interaction_matrix=imat,
-                                           interaction_boost=p.interaction_boost)
-            elif use_numba:
-                from .grow_numba import grow_tree_numba
-                # Sparse histogram layout: built once over the full binned matrix
-                # and reused; only valid when rows are not subsampled (the layout
-                # is keyed by global row id). "auto" keeps it only if dense enough.
-                sl = None
-                if p.sparse_hist is not False and rows is None:
-                    sl = self._get_sparse_layout(binned, n, F)
-                # Prefer the OpenMP C grower (multi-core) over single-threaded
-                # Numba when available; "auto" gates on problem size so tiny trees
-                # don't pay thread spin-up. Same kernel/output, falls back to Numba.
-                gn = gb.shape[0]
-                use_c = (p.c_grower is True or
-                         (p.c_grower == "auto" and gn * F >= self._C_GROWER_MIN_WORK))
-                grown = None
-                if use_c and self._c_grower_ok():
-                    try:
-                        from .grow_c import grow_tree_c
-                        # The feature-major binned layout is constant across
-                        # rounds when rows are not subsampled, so build it once
-                        # and reuse it -- a full-matrix transpose+copy every tree
-                        # was a per-round serial tax (~7% of a bare CPU fit).
-                        bfm = None
-                        if rows is None:
-                            if self._binned_fmajor is None:
-                                self._binned_fmajor = np.ascontiguousarray(
-                                    binned.detach().cpu().numpy().T, dtype=np.uint8)
-                            bfm = self._binned_fmajor
-                        grown = grow_tree_c(gb, gg2, gh2, self.binner, tp_t, fmask,
-                                            interaction_matrix=imat,
-                                            interaction_boost=p.interaction_boost,
-                                            sparse_layout=sl,
-                                            n_threads=p.c_grower_threads,
-                                            binned_fmajor=bfm)
-                    except Exception:
-                        self._c_grower_failed = True  # fall back for the rest of fit
-                        grown = None
-                if grown is not None:
-                    tree = grown
-                else:
-                    tree = grow_tree_numba(gb, gg2, gh2, self.binner, tp_t, fmask,
-                                           interaction_matrix=imat,
-                                           interaction_boost=p.interaction_boost,
-                                           sparse_layout=sl)
-            else:
-                Xn_t = Xn[rows] if (Xn is not None and rows is not None) else Xn
-                tree = grow_tree(gb, gg2, gh2, self.binner, tp_t, fmask, Xnorm=Xn_t,
-                                 gen=gen, kernel_weights_override=kw_override,
-                                 interaction_matrix=imat, interaction_boost=p.interaction_boost)
+            tree = self._grow_one_tree(binned, rows, g, h, tp_t, fmask, imat, gen,
+                                       Xn=Xn, kw_override=kw_override)
 
             # Differentiable tree refinement: a novel optimization step
             # Use effective_refine_steps (may be reduced for small datasets)

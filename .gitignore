@@ -15,3 +15,9 @@ yabt/_cgrow/*
 # macOS
 .DS_Store
 ._*
+
+# TabArena runner artifacts (results cache, leaderboard outputs, run logs)
+benchmarks/tabarena/experiments/
+benchmarks/tabarena/eval/
+benchmarks/tabarena/*.log
+benchmarks/ab_softmax_multiclass.log

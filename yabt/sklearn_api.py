@@ -8,7 +8,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 
 from .binning import PermutationTargetEncoder
 from .boosting import Booster, BoostParams, LogLoss, MSELoss
-from .multiclass import MulticlassBooster
+from .multiclass import MulticlassBooster, SoftmaxBooster
 from .multitask import MultiTaskBooster
 
 _PARAM_NAMES = [f.name for f in BoostParams.__dataclass_fields__.values()]
@@ -187,6 +187,14 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "engage; above this the dense builder is used (no sparsity to exploit)."),
     ],
     [
+        ("multiclass", "str, default=\"softmax\"",
+         "Multiclass strategy: \"softmax\" grows one tree per class per round on\n"
+         "the joint softmax cross-entropy gradients (shared binning, joint early\n"
+         "stopping on multiclass log loss); \"ovr\" trains one independent binary\n"
+         "booster per class. The classifier falls back to OvR when an opt-in\n"
+         "feature the softmax loop does not support is enabled (kernel splits,\n"
+         "GOSS, adaptive/product features, refinement/refit, auto-tune,\n"
+         "stochastic routing)."),
         ("early_stopping_rounds", "int, default=0",
          "Stop if the eval metric does not improve for this many rounds (0\n"
          "disables; requires ``eval_set`` to be passed to ``fit``)."),
@@ -302,7 +310,9 @@ class _YABTBase(BaseEstimator):
 
 
 class YABTClassifier(_YABTBase, ClassifierMixin):
-    """Binary and multiclass classifier using One-vs-Rest for multiclass."""
+    """Binary and multiclass classifier. Multiclass trains native softmax
+    boosting by default (see the ``multiclass`` parameter; One-vs-Rest is the
+    fallback for opt-in features the softmax loop does not support)."""
 
     def fit(self, X, y, eval_set=None, categorical_features: list[int] | None = None):
         self._cat_idx = list(categorical_features) if categorical_features else []
@@ -321,11 +331,23 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
                 ev = (self._encode(eval_set[0], None, fit=False), y_eval)
             self.booster_ = Booster(self._boost_params(), LogLoss())
             self.booster_.fit(Xe, yt, eval_set=ev)
-        else:  # One-vs-Rest
+        else:  # multiclass: native softmax by default, OvR as fallback
             ev = None
             if eval_set is not None:
                 ev = (self._encode(eval_set[0], None, fit=False), eval_set[1])
-            self.booster_ = MulticlassBooster(self._boost_params())
+            params = self._boost_params()
+            # The softmax loop covers the default path; opt-ins that carry
+            # per-booster state still need the independent OvR boosters.
+            softmax_ok = not (
+                params.kernel_splits or params.goss_enabled
+                or params.adaptive_features or params.product_features
+                or params.refine_steps > 0 or params.refit_every > 0
+                or params.auto_tune or params.stochastic_routing
+            )
+            if params.multiclass == "softmax" and softmax_ok:
+                self.booster_ = SoftmaxBooster(params)
+            else:
+                self.booster_ = MulticlassBooster(params)
             self.booster_.fit(Xe, y, eval_set=ev)
 
         return self

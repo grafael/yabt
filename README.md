@@ -404,6 +404,7 @@ not apply to its shared-structure path.
 | `sparse_hist` | `"auto"` | Sparse histogram build for the Numba grower: store each feature's non-modal bins and fill the modal bin by subtraction, making a histogram cost O(node_nnz + F) instead of O(node_rows * F). The win is on wide, sparse data (e.g. ~1.3x on Santander, 4991 features 97% zero), accuracy-neutral. "auto" uses it only when the data is dense enough below `sparse_hist_max_density` and rows are not subsampled; True/False force it (still requires the Numba grower). |
 | `sparse_hist_max_density` | `0.5` | Max fraction of explicitly-stored cells for "auto" `sparse_hist` to engage; above this the dense builder is used (no sparsity to exploit). |
 | **Training control** | | |
+| `multiclass` | `"softmax"` | Multiclass strategy: "softmax" grows one tree per class per round on the joint softmax cross-entropy gradients (shared binning, joint early stopping on multiclass log loss); "ovr" trains one independent binary booster per class. The classifier falls back to OvR when an opt-in feature the softmax loop does not support is enabled (kernel splits, GOSS, adaptive/product features, refinement/refit, auto-tune, stochastic routing). |
 | `early_stopping_rounds` | `0` | Stop if the eval metric does not improve for this many rounds (0 disables; requires `eval_set` to be passed to `fit`). |
 | `seed` | `0` | Random seed. |
 | `device` | `"auto"` | "auto" picks "cuda" when available, else "cpu"; may also be set to "cuda" or "cpu" explicitly. |
