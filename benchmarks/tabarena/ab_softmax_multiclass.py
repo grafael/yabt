@@ -7,7 +7,7 @@ test multiclass log loss and wall-clock fit time. XGBoost's official TabArena
 default (bagged) scores are printed as a reference column.
 
 Run with the tabarena venv (openml + yabt installed):
-    /home/rafael/git/tabarena/.venv/bin/python benchmarks/ab_softmax_multiclass.py
+    /home/rafael/git/tabarena/.venv/bin/python benchmarks/tabarena/ab_softmax_multiclass.py
 """
 
 from __future__ import annotations

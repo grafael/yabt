@@ -97,7 +97,7 @@ class YABTModel(AbstractModel):
         # n_estimators is a cap only: with a validation split, early stopping
         # picks the tree count, which is what makes the low learning rate safe.
         # lr/subsample/colsample/count-features are the proxy-sweep winner over
-        # the 51 TabArena-Lite datasets (benchmarks/ab_tabarena_proxy.py,
+        # the 51 TabArena-Lite datasets (benchmarks/tabarena/ab_tabarena_proxy.py,
         # "combo_cat": mean -3.3% metric error vs library defaults, 44/51 wins).
         defaults = {
             "n_estimators": 10_000,

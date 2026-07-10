@@ -49,14 +49,6 @@ Issues = "https://github.com/grafael/yabt/issues"
 cuda = [
     "ninja>=1.11",
 ]
-bench = [
-    "xgboost>=2.1",
-    "lightgbm>=4.4",
-    "catboost>=1.2",
-    "optuna>=3.6",
-    "openml>=0.14",
-    "rich>=15.0.0",
-]
 dev = [
     "pytest>=8.0",
 ]

@@ -5,7 +5,7 @@ split math -- Newton gain, sibling-subtraction histograms, global best-first lea
 selection, and interaction-aware selection steering -- but as one compiled kernel
 of tight scalar loops, so it pays no per-op torch dispatch/allocation overhead.
 The CPU grower was dispatch-bound, not FLOP-bound: this is 1.5-4x faster than the
-torch heap grower at identical accuracy (benchmarks/ab_grow_numba.py).
+torch heap grower at identical accuracy (A/B-verified).
 
 Kernel (RBF) splits and soft-routing gate scales beyond the split feature's own
 scale are not modelled here; Booster keeps the torch grower for kernel splits.

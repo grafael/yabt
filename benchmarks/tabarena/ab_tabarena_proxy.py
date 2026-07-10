@@ -7,9 +7,9 @@ log loss, regression = RMSE. Each fit gets a stratified 12.5% early-stopping
 holdout carved from the fold-0 train split (mirroring one bag fold).
 
 Usage:
-    python benchmarks/ab_tabarena_proxy.py baseline lr05 lr03 ...
+    python benchmarks/tabarena/ab_tabarena_proxy.py baseline lr05 lr03 ...
 Named configs live in CONFIGS below; results append to
-benchmarks/ab_tabarena_proxy_results.json keyed by config name.
+ab_tabarena_proxy_results.json (next to this script) keyed by config name.
 """
 
 from __future__ import annotations

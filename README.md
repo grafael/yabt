@@ -11,9 +11,11 @@ on better values.
 It exposes the scikit-learn API (`fit` / `predict` / `predict_proba`) and
 works as a drop-in replacement for XGBoost/LightGBM-style estimators.
 
-> **Experimental.** YABT is a research project, not a production library. Its
-> main known limitation is **speed**: training is slower than mature GBDTs like
-> XGBoost or LightGBM (see [Performance vs XGBoost](#performance-vs-xgboost)).
+> **Experimental.** YABT is a research project, not a production library.
+> On [TabArena](#benchmark-results-tabarena) its default config is the
+> second-strongest GBDT default after CatBoost's at competitive train time
+> (on GPU), but it has none of a mature library's hardening (sparse inputs,
+> distributed training, model serialization guarantees, ecosystem tooling).
 
 ## How it works
 
@@ -101,74 +103,82 @@ from sklearn.model_selection import train_test_split
 
 X, y = load_breast_cancer(return_X_y=True)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.1)
 
+# The TabArena-winning recipe: a generous tree cap with early stopping on a
+# validation split, a conservative learning rate, and light row/column
+# subsampling. Neural leaves and interaction-aware splits are on by default.
 clf = YABTClassifier(
-    n_estimators=200,
-    learning_rate=0.1,
-    refine_steps=10,        # differentiable threshold refinement
-    adaptive_features=True, # learned feature importance
-    goss_enabled=True,      # gradient-based sampling
+    n_estimators=10_000,        # cap only; early stopping picks the count
+    early_stopping_rounds=50,
+    learning_rate=0.05,
+    subsample=0.9,
+    colsample=0.9,
 )
-clf.fit(X_train, y_train)
+clf.fit(X_train, y_train, eval_set=(X_val, y_val))
 proba = clf.predict_proba(X_test)
 ```
 
-See `benchmarks/` for accuracy and speed comparisons against XGBoost,
-LightGBM, and CatBoost.
+Categorical columns are handled natively — pass their indices as
+`categorical_features=[...]` to `fit` and they are target-encoded leakage-free
+(see the `cat_*` parameters for count features, pair combinations, and
+per-class multiclass encodings).
 
-## Performance vs XGBoost
+See `benchmarks/` for the [TabArena](https://github.com/autogluon/tabarena)
+benchmark harness and results against XGBoost, LightGBM, CatBoost, and 70+
+other methods.
 
-YABT's per-tree work is heavier than a plain GBDT: each tree gets per-leaf
-linear models and (optionally) interaction steering. With matched settings
-(200 trees, 31 leaves) a YABT tree is therefore several times slower to build
-than an XGBoost `hist` tree. The flip side is that each tree is *stronger*, so
-YABT reaches the same accuracy with far fewer trees:
+## Benchmark results: TabArena
 
-- On a 20k-row, 20-feature regression, YABT matches XGBoost's 200-tree R² with
-  about 25 trees (and keeps climbing past it), so at iso-accuracy it trains in
-  the same ballpark wall-clock, not 10x slower.
-- It is consistently a touch more accurate at equal tree counts (+0.01 to +0.02
-  R² in the examples above), which is the trade YABT is built to make: spend
-  compute per tree to need fewer of them.
+YABT is benchmarked on [TabArena](https://tabarena.ai) (TabArena-Lite: 51
+curated datasets, the official protocol — fixed splits, 8-fold bagging, ROC
+AUC / log loss / RMSE), against the public leaderboard of 70+ methods spanning
+GBDTs, neural nets, AutoML systems, and tabular foundation models.
 
-Training is also fully vectorized on the GPU (`device="auto"` uses CUDA when
-available, with the level-wise grower batching the per-depth work). XGBoost's
-hand-tuned CUDA kernels are still faster per tree, but the gap narrows on
-larger data while YABT stays ahead on accuracy.
+**YABT's default configuration scores Elo 1266 (rank 36 of 78)** — the
+strongest GBDT *default* on the leaderboard after CatBoost's, ahead of the
+XGBoost / LightGBM / EBM defaults by a wide margin and ahead of several
+*tuned* (200-config HPO) entries:
 
-Practical guidance: with neural leaves doing more per tree, you usually want a
-*lower* `n_estimators` than you would give XGBoost. Start around 50-100 and add
-an `eval_set` with `early_stopping_rounds` rather than defaulting to many
-hundreds of trees.
+| # | Model | Elo | Median train s/1K rows |
+|--:|---|--:|--:|
+| 22 | CatBoost (default) | 1340 | 6.7 (CPU) |
+| 26 | ChimeraBoost (tuned + ensembled) | 1326 | 2047.7 (CPU) |
+| **36** | **YABT (default)** | **1266** | **3.3 (GPU)** |
+| 37 | EBM (tuned + ensembled) | 1254 | 4206.6 (CPU) |
+| 50 | XGBoost (default) | 1183 | 2.1 (CPU) |
+| 55 | LightGBM (default) | 1154 | 2.2 (CPU) |
 
-## Benchmark results
+(The top of the table is tabular foundation models and 4-hour AutoML systems —
+TabFM at 1793, TabPFN variants, AutoGluon — a different compute class than any
+single default-config model.)
 
-Across 92 datasets from six OpenML suites — the Grinsztajn et al. (2022)
-numeric/categorical classification and regression suites plus the CTR23 and
-AMLB regression suites — all five libraries (YABT, XGBoost, LightGBM, CatBoost,
-HistGBM) run with matched defaults (100 trees, lr 0.1, depth 6) on the same
-GPU. Models are scored with $R^2$ on the 73 regression datasets and accuracy on
-the 19 classification datasets (both higher-is-better). YABT has the best score
-on more datasets than any other library — 37 of 92: an outright win on 32 (the
-green cells below) plus a tie for best on 5 more (yellow) — at the cost of
-higher per-tree wall-clock time:
+Against CatBoost's default head-to-head, YABT wins 18 of 51 datasets with a
+median metric-error gap of +0.6% (binary +0.7%, regression +0.4%, multiclass
++4.7%); the remaining Elo gap is concentrated in a small tail of
+small-or-noisy datasets where CatBoost's ordered boosting is strong.
 
-![OpenML benchmark results](benchmarks/openml_regression.png)
+The TabArena default config (defined in `benchmarks/tabarena/yabt_model.py`)
+is `learning_rate=0.05`, `subsample=colsample=0.9`, a 10k-tree cap with
+`early_stopping_rounds=50` on the fold's validation split,
+`cat_count_features=True`, `cat_combinations=16`, and
+`calibrate_multiclass=True`. Every piece was A/B-selected on a fold-0 proxy
+sweep and confirmed on the full bagged protocol
+(`benchmarks/tabarena/ab_tabarena_proxy.py` has the sweep harness and
+measurements).
 
 ### Reproducing the numbers
 
-The table is rendered from `benchmarks/openml_benchmark_results.json`, which is
-produced by the benchmark harness. From the `benchmarks/` directory:
+The harness needs a TabArena environment (see `benchmarks/README.md` for
+setup). Then, from `benchmarks/tabarena/`:
 
 ```bash
-python openml_benchmark.py --suite all --seeds 3 --device gpu
+python run_tabarena.py           # smoke run: 3 small datasets
+python run_tabarena.py --full    # full TabArena-Lite (~40 min on an RTX 4090)
 ```
 
-This loads each dataset, runs every library over three train/test splits, and
-writes the mean score ($R^2$ for regression, accuracy for classification) and
-fit time per model back to the JSON (use `--device cpu` if you have no CUDA
-device; `--suite num_reg` runs a single suite, `--list` shows the datasets).
-The figure is a LaTeX rendering of that JSON.
+Results cache under `experiments/` (re-runs resume where they left off); the
+leaderboard CSV, Pareto fronts, and win-rate matrix land in `eval/`.
 
 ## Kernel-based splits
 

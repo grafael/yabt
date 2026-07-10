@@ -4,7 +4,7 @@
 grows one tree per class from the gradients of the *joint* softmax cross-entropy
 (XGBoost-style, class probabilities frozen at the start of the round), with a
 single shared binning and joint early stopping on the multiclass log loss.
-A/B on the TabArena multiclass suite (benchmarks/ab_softmax_multiclass.py) it
+A/B on the TabArena multiclass suite (benchmarks/tabarena/ab_softmax_multiclass.py) it
 beats OvR on log loss on 7/8 datasets (mean delta -0.078, up to -0.18; the one
 regression is +0.013 on the smallest, ~790-row anneal) at a median 1.27x faster
 (shared binning + one early-stopping clock instead of K).

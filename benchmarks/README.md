@@ -1,73 +1,54 @@
-# YABT Benchmark Suite
+# YABT benchmarks: TabArena
 
-`openml_benchmark.py` is the standard tabular-GBM benchmark on the
-**Grinsztajn et al. (2022) OpenML suites** (the suites used by *"Why do
-tree-based models still outperform deep learning on tabular data?"*). This is
-the one to cite. Real datasets, multiple seeds, native categorical handling,
-same-device timing.
+YABT is benchmarked on [TabArena](https://github.com/autogluon/tabarena), the
+living tabular-ML benchmark behind [tabarena.ai](https://tabarena.ai): 51
+curated datasets (binary / multiclass / regression), an enforced protocol
+(fixed splits, 8-fold bagging, per-dataset metrics: ROC AUC, log loss, RMSE),
+and a leaderboard of 70+ methods spanning GBDTs, AutoML systems, and tabular
+foundation models. Everything lives under `tabarena/`.
 
-## Files
+## Files (`tabarena/`)
 
-- **`openml_benchmark.py`** - Standard OpenML/Grinsztajn benchmark runner
-- **`datasets.py`** - Grinsztajn/CTR23/AMLB suite definitions + OpenML loader
-- **`openml_benchmark_results.json`** - Results from the standard benchmark
+- **`yabt_model.py`** — YABT wrapped as an AutoGluon `AbstractModel`, plus the
+  TabArena default config and the HPO search space. The default config is the
+  winner of the proxy sweep below, each piece confirmed on the full bagged
+  protocol.
+- **`run_tabarena.py`** — the benchmark runner. Results cache under
+  `experiments/` (re-runs resume; delete a task dir to force a re-fit),
+  leaderboard + plots under `eval/`.
+- **`ab_tabarena_proxy.py`** — fast config A/B loop: single (unbagged) fold-0
+  fits over all 51 datasets, ~2–3 min per config on a free GPU. Single-fit
+  deltas under ±5% are seed noise — confirm candidates with multi-seed means
+  or a full bagged run before shipping them.
+- **`ab_tabarena_proxy_results.json`** — proxy sweep measurements (17 configs).
+- **`ab_softmax_multiclass.py`** — the softmax-vs-OvR multiclass A/B.
 
-## Standard benchmark (openml_benchmark.py)
+## Setup
 
-The benchmark suites (resolved in `datasets.py`). The four Grinsztajn suites are
-the ones to cite; CTR23 and AMLB broaden regression coverage beyond Grinsztajn's
-filter (more small datasets, real missing values, high-cardinality categoricals):
-
-| Suite        | OpenML id | Task                       | # datasets |
-|--------------|-----------|----------------------------|------------|
-| `num_clf`    | 337       | numerical classification   | 16         |
-| `num_reg`    | 336       | numerical regression       | 19         |
-| `cat_clf`    | 334       | categorical classification | 7          |
-| `cat_reg`    | 335       | categorical regression     | 17         |
-| `ctr23_reg`  | 353       | regression (OpenML-CTR23)  | 35         |
-| `amlb_reg`   | 269       | regression (AutoML Bench)  | 33         |
-
-**Protocol:** each dataset is subsampled to `--max-rows` (Grinsztajn "medium"
-regime), split `--seeds` times into 70/30 train/test, and every model
-(YABT, XGBoost, LightGBM, CatBoost, scikit-learn HistGBM) is fit with default
-hyper-parameters (100 trees, lr 0.1, depth 6) on the **same device**. Metric is
-accuracy (classification) or R² (regression), reported as mean ± std across
-seeds. Each model gets native categorical handling (YABT target-encoding,
-XGBoost `enable_categorical`, LightGBM `categorical_feature`, CatBoost
-`cat_features`, HistGBM `categorical_features`). HistGBM is CPU-only and ignores
-`--device`; on datasets whose categoricals exceed its bin limit it is skipped
-for that dataset (caught per-model, reported as FAILED).
+The harness runs inside a TabArena environment (not YABT's own venv):
 
 ```bash
-# list datasets in a suite
-python openml_benchmark.py --suite num_reg --list
-
-# run numerical regression, 3 seeds (default)
-python openml_benchmark.py --suite num_reg
-
-# smaller/faster: cap rows and dataset count
-python openml_benchmark.py --suite num_clf --max-rows 20000 --max-datasets 6
-
-# everything (slow)
-python openml_benchmark.py --suite all
+git clone https://github.com/autogluon/tabarena
+cd tabarena && uv venv --python 3.12 .venv
+VIRTUAL_ENV=$PWD/.venv uv pip install --prerelease=allow -e "./packages/tabarena[benchmark]" tabulate
+VIRTUAL_ENV=$PWD/.venv uv pip install -e /path/to/yabt ninja
 ```
 
-Timing: every model runs on the same device. Use `--device gpu` for GPU-only,
-or `--device both` to time each model on **CPU and GPU** in the same run (scores
-should match; the summary prints a `cpu_time`/`gpu_time` column per model):
+## Running
+
+From `benchmarks/tabarena/`, with the TabArena venv's python:
+
 ```bash
-python openml_benchmark.py --suite num_reg --device gpu
-python openml_benchmark.py --suite num_reg --device both
+python run_tabarena.py           # smoke run: 3 small datasets
+python run_tabarena.py --full    # full TabArena-Lite (51 datasets, ~40 min on a 4090)
+python run_tabarena.py --full --n-configs 200   # adds the tuned-config HPO protocol
 ```
-On small datasets GPU can be *slower* than CPU (kernel-launch overhead dominates);
-the GPU advantage shows up on the large datasets — raise `--max-rows` to see it.
 
-To re-resolve the dataset ids from the live OpenML study endpoint:
-```python
-from datasets import refresh_suites; print(refresh_suites())
-```
+The first run downloads datasets from OpenML and the official leaderboard
+baselines into `~/.cache/openml` / `~/.cache/tabarena`; both are persistent.
 
 ## Results
 
-Results are written to `openml_benchmark_results.json`, containing the scores
-(accuracy / R²) and per-device timing for each model on each dataset.
+See the "Benchmark results" section of the top-level README for the current
+leaderboard standing, and `eval/yabt_tabarena_full/` after a run for the full
+leaderboard CSV, Pareto fronts, and win-rate matrix.
