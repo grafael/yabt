@@ -208,6 +208,40 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
         ("cat_smoothing", "float, default=10.0",
          "Smoothing strength for the leakage-free target encoding of categorical\n"
          "columns (selected via the ``categorical_features`` argument to ``fit``)."),
+        ("cat_per_class", "bool, default=False",
+         "Multiclass only: target-encode each categorical column once per class\n"
+         "(one-vs-rest indicators), replacing the column with class 0's encoding\n"
+         "and appending the rest, instead of encoding the raw class index (whose\n"
+         "mean is ordinal noise)."),
+        ("cat_count_features", "bool, default=False",
+         "Append a log1p train-frequency column per categorical, so trees can\n"
+         "split on how common a category is independently of its target rate."),
+        ("cat_combinations", "int, default=0",
+         "Target-encode up to this many categorical *pairs* (CatBoost-style\n"
+         "feature combinations, strongest parent columns first) and append them\n"
+         "as extra columns, so trees can split on conjunctions that neither\n"
+         "parent captures alone. 0 disables."),
+        ("cat_combinations_min_card", "int, default=8",
+         "Only categorical columns with at least this many distinct training\n"
+         "values are eligible as pair parents: small-cat conjunctions are\n"
+         "reachable with two ordinary splits, so their pair encodings are noise\n"
+         "columns, while high-cardinality conjunctions carry unique signal."),
+        ("calibrate_multiclass", "bool, default=False",
+         "Vector-scale multiclass probabilities (per-class scale and bias on\n"
+         "log p, re-softmaxed) fit on the ``eval_set`` after training. Bounded\n"
+         "near identity and L2-pulled toward it, so a small validation set\n"
+         "cannot push predictions far from the uncalibrated ones. Requires an\n"
+         "``eval_set``; classifier-only, no effect on binary problems."),
+        ("svd_features", "int, default=0",
+         "Append this many PCA projections of the (encoded, standardized)\n"
+         "feature matrix as extra columns. Axis-aligned splits cannot express\n"
+         "linear combinations of features; the top principal directions hand\n"
+         "the strongest ones to the grower as ordinary columns. 0 disables."),
+        ("svd_min_features", "int, default=32",
+         "Minimum encoded width for ``svd_features`` to engage: with few\n"
+         "columns the top principal directions are near-copies of raw features\n"
+         "and the extra columns just dilute sampling, while many correlated\n"
+         "columns carry real linear structure."),
     ],
 ]
 
@@ -261,34 +295,172 @@ class _YABTBase(BaseEstimator):
         for name in _PARAM_NAMES:
             setattr(self, name, kwargs.pop(name, getattr(defaults, name)))
         self.cat_smoothing = kwargs.pop("cat_smoothing", 10.0)
+        self.cat_per_class = kwargs.pop("cat_per_class", False)
+        self.cat_count_features = kwargs.pop("cat_count_features", False)
+        self.cat_combinations = kwargs.pop("cat_combinations", 0)
+        self.cat_combinations_min_card = kwargs.pop("cat_combinations_min_card", 8)
+        self.calibrate_multiclass = kwargs.pop("calibrate_multiclass", False)
+        self.svd_features = kwargs.pop("svd_features", 0)
+        self.svd_min_features = kwargs.pop("svd_min_features", 32)
         if kwargs:
             raise TypeError(f"Unknown parameters: {sorted(kwargs)}")
 
     @classmethod
     def _get_param_names(cls):
-        return sorted(_PARAM_NAMES + ["cat_smoothing"])
+        return sorted(_PARAM_NAMES + ["cat_smoothing", "cat_per_class",
+                                      "cat_count_features", "cat_combinations",
+                                      "cat_combinations_min_card",
+                                      "calibrate_multiclass", "svd_features",
+                                      "svd_min_features"])
 
     def _boost_params(self) -> BoostParams:
         return BoostParams(**{n: getattr(self, n) for n in _PARAM_NAMES})
 
-    def _encode(self, X: np.ndarray, y: np.ndarray | None, fit: bool) -> np.ndarray:
-        """Replace categorical columns with leakage-free target encodings."""
+    def _encode(self, X: np.ndarray, Y: np.ndarray | None, fit: bool) -> np.ndarray:
+        """Replace categorical columns with leakage-free target encodings.
+
+        ``Y`` may be a matrix (n, T) of T encoding targets (the multiclass
+        per-class one-vs-rest indicators): target 0's encoding replaces the
+        categorical column in place and targets 1..T-1 are appended as extra
+        columns, one block per target. With ``cat_count_features`` a log1p
+        train-frequency column per categorical is appended after those. With
+        ``cat_combinations`` = P > 0, up to P categorical *pairs* (CatBoost-style
+        feature combinations, picked by the target relevance of their parent
+        columns) are target-encoded on target 0 and appended as extra columns,
+        so trees can split on conjunctions like user x resource that neither
+        parent encodes alone.
+        """
         if not getattr(self, "_cat_idx", None):
-            return np.asarray(X, dtype=np.float32)
+            return self._append_svd(np.asarray(X, dtype=np.float32), fit)
         X = np.asarray(X)
         Xc = X[:, self._cat_idx]
         if fit:
-            self._cat_enc = PermutationTargetEncoder(smoothing=self.cat_smoothing, seed=self.seed)
-            enc = self._cat_enc.fit_transform(Xc, y)
+            Y = np.asarray(Y, dtype=np.float32)
+            Y2 = Y[:, None] if Y.ndim == 1 else Y
+            self._cat_encs = []
+            encs = []
+            for t in range(Y2.shape[1]):
+                e = PermutationTargetEncoder(smoothing=self.cat_smoothing, seed=self.seed)
+                encs.append(e.fit_transform(Xc, Y2[:, t]))
+                self._cat_encs.append(e)
+            if self.cat_count_features:
+                # Train-set frequency per category value; unseen values at
+                # predict time fall back to count 0 (log1p -> 0).
+                self._cat_counts = []
+                for c in range(Xc.shape[1]):
+                    vals, cnts = np.unique(Xc[:, c], return_counts=True)
+                    self._cat_counts.append(dict(zip(vals.tolist(), cnts.tolist())))
+            self._pair_specs = []
+            if self.cat_combinations > 0 and Xc.shape[1] >= 2:
+                # Pair only high-cardinality parents: a pair of small cats is
+                # reachable with two ordinary splits, so its encoding is noise
+                # columns (A/B: anneal, ~30 tiny cats, regressed +14%), while
+                # high-cardinality conjunctions (e.g. user x resource) carry
+                # signal trees cannot reconstruct (A/B: Amazon -12%). Among
+                # those, rank parents by the target relevance of their single
+                # encoding and keep the strongest-first top P pairs.
+                y0 = Y2[:, 0]
+                cards = [len(np.unique(Xc[:, c])) for c in range(Xc.shape[1])]
+                elig = [c for c in range(Xc.shape[1])
+                        if cards[c] >= self.cat_combinations_min_card]
+                strength = {c: abs(float(np.corrcoef(encs[0][:, c], y0)[0, 1]))
+                            if np.std(encs[0][:, c]) > 0 else 0.0
+                            for c in elig}
+                order = sorted(elig, key=lambda c: -strength[c])
+                cands = [(order[i], order[j])
+                         for i in range(len(order)) for j in range(i + 1, len(order))]
+                cands = cands[: 3 * int(self.cat_combinations)]
+                # Keep a pair only if its (leakage-free) encoding beats both
+                # parents' target correlation by a margin — the same guard that
+                # keeps product_features exact-neutral on data without the
+                # structure (A/B: drops the date x demographic noise pairs that
+                # regressed Marketing_Campaign while keeping user x resource
+                # style conjunctions).
+                if cands:
+                    self._pair_specs = cands
+                    Xp = self._pair_keys(Xc, fit=True)
+                    e = PermutationTargetEncoder(smoothing=self.cat_smoothing, seed=self.seed)
+                    encp = e.fit_transform(Xp, y0)
+                    keep = []
+                    for p, (i, j) in enumerate(cands):
+                        if np.std(encp[:, p]) == 0:
+                            continue
+                        pc = abs(float(np.corrcoef(encp[:, p], y0)[0, 1]))
+                        if pc > 1.1 * max(strength[i], strength[j]):
+                            keep.append((i, j))
+                    self._pair_specs = keep[: int(self.cat_combinations)]
         else:
-            enc = self._cat_enc.transform(Xc)
+            encs = [e.transform(Xc) for e in self._cat_encs]
         out = X.astype(np.float32, copy=True) if X.dtype != object else None
         if out is None:
             num_idx = [i for i in range(X.shape[1]) if i not in set(self._cat_idx)]
             out = np.empty(X.shape, dtype=np.float32)
             out[:, num_idx] = X[:, num_idx].astype(np.float32)
-        out[:, self._cat_idx] = enc
-        return out
+        out[:, self._cat_idx] = encs[0]
+        extra = [np.asarray(e, dtype=np.float32) for e in encs[1:]]
+        if self.cat_count_features:
+            cnt = np.empty(Xc.shape, dtype=np.float32)
+            for c in range(Xc.shape[1]):
+                m = self._cat_counts[c]
+                cnt[:, c] = [m.get(v, 0.0) for v in Xc[:, c]]
+            extra.append(np.log1p(cnt))
+        if getattr(self, "_pair_specs", None):
+            Xp = self._pair_keys(Xc, fit=fit)
+            if fit:
+                self._pair_enc = PermutationTargetEncoder(
+                    smoothing=self.cat_smoothing, seed=self.seed)
+                extra.append(self._pair_enc.fit_transform(Xp, Y2[:, 0]))
+            else:
+                extra.append(self._pair_enc.transform(Xp))
+        if extra:
+            out = np.hstack([out] + extra)
+        return self._append_svd(out, fit)
+
+    def _append_svd(self, Xe: np.ndarray, fit: bool) -> np.ndarray:
+        """Append ``svd_features`` PCA projections of the encoded matrix as
+        extra columns. Axis-aligned splits cannot express linear combinations
+        of features; the top principal directions hand the strongest ones to
+        the grower as ordinary columns. NaNs are median-imputed for the
+        projection only (the tree path keeps its own NaN handling)."""
+        if not self.svd_features:
+            return Xe
+        if fit:
+            # Gate on width: with few columns the top principal directions are
+            # near-copies of raw features, and the added columns just dilute
+            # colsample (A/B: airfoil F=5 +10%, concrete F=8 +6%); with many
+            # correlated columns they carry real linear structure (A/B:
+            # qsar-biodeg F=41 -9%, Bioresponse F=1776 -5%).
+            self._svd_active = Xe.shape[1] >= self.svd_min_features
+        if not self._svd_active:
+            return Xe
+        k = int(min(self.svd_features, Xe.shape[1] - 1, Xe.shape[0] - 1))
+        if k < 1:
+            return Xe
+        if fit:
+            from sklearn.decomposition import PCA
+            from sklearn.preprocessing import StandardScaler
+            self._svd_medians = np.nanmedian(Xe, axis=0)
+            self._svd_medians = np.where(np.isnan(self._svd_medians), 0.0, self._svd_medians)
+            Z = np.where(np.isnan(Xe), self._svd_medians, Xe)
+            self._svd_scaler = StandardScaler().fit(Z)
+            self._svd = PCA(n_components=k, random_state=self.seed).fit(
+                self._svd_scaler.transform(Z))
+        Z = np.where(np.isnan(Xe), self._svd_medians, Xe)
+        proj = self._svd.transform(self._svd_scaler.transform(Z)).astype(np.float32)
+        return np.hstack([Xe, proj])
+
+    def _pair_keys(self, Xc: np.ndarray, fit: bool) -> np.ndarray:
+        """Combine each selected categorical pair into one key column. Codes are
+        shifted so NaN codes (-1) stay valid; a fit-time multiplier keeps keys
+        unique, and unseen fit-time values simply produce unseen keys, which the
+        pair encoder maps to the prior."""
+        if fit:
+            self._pair_mult = [float(Xc[:, j].astype(np.float64).max()) + 2.0
+                               for (_, j) in self._pair_specs]
+        Xp = np.empty((Xc.shape[0], len(self._pair_specs)), dtype=np.float64)
+        for p, ((i, j), mult) in enumerate(zip(self._pair_specs, self._pair_mult)):
+            Xp[:, p] = (Xc[:, i].astype(np.float64) + 1.0) * mult + Xc[:, j].astype(np.float64)
+        return Xp
 
     def fit(self, X, y, eval_set=None, categorical_features: list[int] | None = None):
         self._cat_idx = list(categorical_features) if categorical_features else []
@@ -320,8 +492,14 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
         self.classes_ = np.unique(y)
         self.n_classes_ = len(self.classes_)
 
-        Xe = self._encode(X, y, fit=True)
         self._is_binary = self.n_classes_ == 2
+        if not self._is_binary and self.cat_per_class:
+            # Per-class one-vs-rest encoding targets: the mean of the raw class
+            # index is ordinal noise, but P(class k | category) is signal.
+            Y_enc = (y[:, None] == self.classes_[None, :]).astype(np.float32)
+        else:
+            Y_enc = y
+        Xe = self._encode(X, Y_enc, fit=True)
 
         if self._is_binary:
             yt = (y == self.classes_[1]).astype(np.float32)
@@ -349,8 +527,49 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
             else:
                 self.booster_ = MulticlassBooster(params)
             self.booster_.fit(Xe, y, eval_set=ev)
+            self._calibration = None
+            if self.calibrate_multiclass and eval_set is not None:
+                self._fit_vector_calibration(
+                    self.booster_.predict_proba(ev[0]),
+                    np.searchsorted(self.classes_, np.asarray(eval_set[1], dtype=np.float32)),
+                )
 
         return self
+
+    def _fit_vector_calibration(self, P: np.ndarray, y_idx: np.ndarray) -> None:
+        """Vector scaling of multiclass log-probabilities, fit on the eval split
+        (per-class scale w and bias b on log p, re-softmaxed). Bounded close to
+        identity and pulled toward it by an L2 penalty, so a small validation
+        set cannot drag the mapping far from the uncalibrated probabilities."""
+        from scipy import optimize
+        K = P.shape[1]
+        eps = 1e-15
+        z = np.log(P + eps)
+        n = len(y_idx)
+
+        def loss(params):
+            w, b = params[:K], params[K:]
+            zp = w * z + b
+            zp = zp - zp.max(axis=1, keepdims=True)
+            p = np.exp(zp)
+            p /= p.sum(axis=1, keepdims=True)
+            nll = -np.mean(np.log(p[np.arange(n), y_idx] + eps))
+            return nll + 1e-3 * (np.sum((w - 1.0) ** 2) + np.sum(b ** 2))
+
+        res = optimize.minimize(
+            loss, np.concatenate([np.ones(K), np.zeros(K)]),
+            bounds=[(0.8, 1.2)] * K + [(-1.0, 1.0)] * K, method="L-BFGS-B",
+        )
+        self._calibration = (res.x[:K], res.x[K:])
+
+    def _apply_calibration(self, P: np.ndarray) -> np.ndarray:
+        if getattr(self, "_calibration", None) is None:
+            return P
+        w, b = self._calibration
+        zp = w * np.log(P + 1e-15) + b
+        zp -= zp.max(axis=1, keepdims=True)
+        p = np.exp(zp)
+        return p / p.sum(axis=1, keepdims=True)
 
     def predict_proba(self, X) -> np.ndarray:
         """Class probabilities, (n_samples, n_classes)."""
@@ -358,7 +577,7 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
         if self._is_binary:
             p = expit(self.booster_.predict_margin(Xe))
             return np.stack([1 - p, p], axis=1)
-        return self.booster_.predict_proba(Xe)
+        return self._apply_calibration(self.booster_.predict_proba(Xe))
 
     def predict(self, X) -> np.ndarray:
         """Predicted class label per row."""
@@ -366,7 +585,8 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
         if self._is_binary:
             margin = self.booster_.predict_margin(Xe)
             return self.classes_[(margin > 0).astype(int)]
-        return self.booster_.predict(Xe)
+        proba = self._apply_calibration(self.booster_.predict_proba(Xe))
+        return self.classes_[np.argmax(proba, axis=1)]
 
 
 class YABTRegressor(_YABTBase, RegressorMixin):

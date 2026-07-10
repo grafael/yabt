@@ -21,10 +21,17 @@ from yabt.sklearn_api import (
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 
-# cat_smoothing lives on the estimator (not BoostParams); its default is set in
-# _YABTBase.__init__.
-ALL_PARAMS = {f.name for f in BoostParams.__dataclass_fields__.values()} | {"cat_smoothing"}
-EXTRA_DEFAULTS = {"cat_smoothing": 10.0}
+# The cat_* params live on the estimator (not BoostParams); their defaults are
+# set in _YABTBase.__init__.
+ALL_PARAMS = {f.name for f in BoostParams.__dataclass_fields__.values()} | {
+    "cat_smoothing", "cat_per_class", "cat_count_features", "cat_combinations",
+    "cat_combinations_min_card", "calibrate_multiclass", "svd_features", "svd_min_features",
+}
+EXTRA_DEFAULTS = {
+    "cat_smoothing": 10.0, "cat_per_class": False, "cat_count_features": False,
+    "cat_combinations": 0, "cat_combinations_min_card": 8,
+    "calibrate_multiclass": False, "svd_features": 0, "svd_min_features": 32,
+}
 
 
 def _flat_groups():

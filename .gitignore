@@ -21,3 +21,4 @@ benchmarks/tabarena/experiments/
 benchmarks/tabarena/eval/
 benchmarks/tabarena/*.log
 benchmarks/ab_softmax_multiclass.log
+benchmarks/ab_proxy.log

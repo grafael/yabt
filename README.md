@@ -410,6 +410,13 @@ not apply to its shared-structure path.
 | `device` | `"auto"` | "auto" picks "cuda" when available, else "cpu"; may also be set to "cuda" or "cpu" explicitly. |
 | `verbose` | `False` | Print per-iteration training progress. |
 | `cat_smoothing` | `10.0` | Smoothing strength for the leakage-free target encoding of categorical columns (selected via the `categorical_features` argument to `fit`). |
+| `cat_per_class` | `False` | Multiclass only: target-encode each categorical column once per class (one-vs-rest indicators), replacing the column with class 0's encoding and appending the rest, instead of encoding the raw class index (whose mean is ordinal noise). |
+| `cat_count_features` | `False` | Append a log1p train-frequency column per categorical, so trees can split on how common a category is independently of its target rate. |
+| `cat_combinations` | `0` | Target-encode up to this many categorical *pairs* (CatBoost-style feature combinations, strongest parent columns first) and append them as extra columns, so trees can split on conjunctions that neither parent captures alone. 0 disables. |
+| `cat_combinations_min_card` | `8` | Only categorical columns with at least this many distinct training values are eligible as pair parents: small-cat conjunctions are reachable with two ordinary splits, so their pair encodings are noise columns, while high-cardinality conjunctions carry unique signal. |
+| `calibrate_multiclass` | `False` | Vector-scale multiclass probabilities (per-class scale and bias on log p, re-softmaxed) fit on the `eval_set` after training. Bounded near identity and L2-pulled toward it, so a small validation set cannot push predictions far from the uncalibrated ones. Requires an `eval_set`; classifier-only, no effect on binary problems. |
+| `svd_features` | `0` | Append this many PCA projections of the (encoded, standardized) feature matrix as extra columns. Axis-aligned splits cannot express linear combinations of features; the top principal directions hand the strongest ones to the grower as ordinary columns. 0 disables. |
+| `svd_min_features` | `32` | Minimum encoded width for `svd_features` to engage: with few columns the top principal directions are near-copies of raw features and the extra columns just dilute sampling, while many correlated columns carry real linear structure. |
 
 ## License
 

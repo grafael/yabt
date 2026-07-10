@@ -94,8 +94,26 @@ class YABTModel(AbstractModel):
         self._fit_time = time.time() - start
 
     def _set_default_params(self) -> None:
-        # Cap only: with a validation split, early stopping picks the tree count.
-        for param, val in {"n_estimators": 10_000, "early_stopping_rounds": 50}.items():
+        # n_estimators is a cap only: with a validation split, early stopping
+        # picks the tree count, which is what makes the low learning rate safe.
+        # lr/subsample/colsample/count-features are the proxy-sweep winner over
+        # the 51 TabArena-Lite datasets (benchmarks/ab_tabarena_proxy.py,
+        # "combo_cat": mean -3.3% metric error vs library defaults, 44/51 wins).
+        defaults = {
+            "n_estimators": 10_000,
+            "early_stopping_rounds": 50,
+            "learning_rate": 0.05,
+            "subsample": 0.9,
+            "colsample": 0.9,
+            "cat_count_features": True,
+            # High-cardinality pair conjunctions, gated by the parent-beating
+            # correlation guard (seed-averaged A/B: Amazon -8%, no regressions).
+            "cat_combinations": 16,
+            # Vector scaling on the ES validation split (TabFM-style): proxy
+            # A/B multiclass -3.3% mean (anneal -16%), binary/regression untouched.
+            "calibrate_multiclass": True,
+        }
+        for param, val in defaults.items():
             self._set_default_param_value(param, val)
 
     def _get_default_auxiliary_params(self) -> dict:
