@@ -415,7 +415,8 @@ not apply to its shared-structure path.
 | `sparse_hist_max_density` | `0.5` | Max fraction of explicitly-stored cells for "auto" `sparse_hist` to engage; above this the dense builder is used (no sparsity to exploit). |
 | **Training control** | | |
 | `multiclass` | `"softmax"` | Multiclass strategy: "softmax" grows one tree per class per round on the joint softmax cross-entropy gradients (shared binning, joint early stopping on multiclass log loss); "ovr" trains one independent binary booster per class. The classifier falls back to OvR when an opt-in feature the softmax loop does not support is enabled (kernel splits, GOSS, adaptive/product features, refinement/refit, auto-tune, stochastic routing). |
-| `early_stopping_rounds` | `0` | Stop if the eval metric does not improve for this many rounds (0 disables; requires `eval_set` to be passed to `fit`). |
+| `early_stopping_rounds` | `50` | Stop if the eval metric does not improve for this many rounds (0 disables). The metric is computed on the `eval_set` passed to `fit`, or on a `validation_fraction` holdout carved automatically when no `eval_set` is given. |
+| `validation_fraction` | `0.15` | Fraction of the training data carved off (stratified for the classifier, seeded by `seed`) to drive early stopping when `fit` is called without an `eval_set`, so the tree count adapts to the dataset instead of overfitting small data at the full `n_estimators` budget. Not carved -- the full data is trained on, as before -- when early stopping is disabled or could never trigger (`n_estimators` <= `early_stopping_rounds`), when set to 0, when the holdout would have fewer than 50 rows, or under `auto_tune` (which manages its own validation). |
 | `seed` | `0` | Random seed. |
 | `device` | `"auto"` | "auto" picks "cuda" when available, else "cpu"; may also be set to "cuda" or "cpu" explicitly. |
 | `verbose` | `False` | Print per-iteration training progress. |

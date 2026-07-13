@@ -193,8 +193,11 @@ class BoostParams:
     # loop does not support (kernel splits, GOSS, adaptive/product features,
     # refinement/refit, auto-tune, stochastic routing).
     multiclass: str = "softmax"
-    # Training control
-    early_stopping_rounds: int = 0
+    # Training control. Early stopping is on by default: the sklearn estimators
+    # carve a validation_fraction holdout when fit gets no eval_set, so the
+    # tree count adapts to the dataset instead of overfitting small data at the
+    # full n_estimators budget. Set to 0 to disable.
+    early_stopping_rounds: int = 50
     seed: int = 0
     device: str = "auto"  # "auto" picks cuda when available, else cpu
     verbose: bool = False

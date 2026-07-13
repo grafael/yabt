@@ -195,9 +195,21 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "feature the softmax loop does not support is enabled (kernel splits,\n"
          "GOSS, adaptive/product features, refinement/refit, auto-tune,\n"
          "stochastic routing)."),
-        ("early_stopping_rounds", "int, default=0",
+        ("early_stopping_rounds", "int, default=50",
          "Stop if the eval metric does not improve for this many rounds (0\n"
-         "disables; requires ``eval_set`` to be passed to ``fit``)."),
+         "disables). The metric is computed on the ``eval_set`` passed to\n"
+         "``fit``, or on a ``validation_fraction`` holdout carved\n"
+         "automatically when no ``eval_set`` is given."),
+        ("validation_fraction", "float, default=0.15",
+         "Fraction of the training data carved off (stratified for the\n"
+         "classifier, seeded by ``seed``) to drive early stopping when ``fit``\n"
+         "is called without an ``eval_set``, so the tree count adapts to the\n"
+         "dataset instead of overfitting small data at the full\n"
+         "``n_estimators`` budget. Not carved -- the full data is trained on,\n"
+         "as before -- when early stopping is disabled or could never trigger\n"
+         "(``n_estimators`` <= ``early_stopping_rounds``), when set to 0, when\n"
+         "the holdout would have fewer than 50 rows, or under ``auto_tune``\n"
+         "(which manages its own validation)."),
         ("seed", "int, default=0",
          "Random seed."),
         ("device", "str, default=\"auto\"",
@@ -302,6 +314,7 @@ class _YABTBase(BaseEstimator):
         self.calibrate_multiclass = kwargs.pop("calibrate_multiclass", False)
         self.svd_features = kwargs.pop("svd_features", 0)
         self.svd_min_features = kwargs.pop("svd_min_features", 32)
+        self.validation_fraction = kwargs.pop("validation_fraction", 0.15)
         if kwargs:
             raise TypeError(f"Unknown parameters: {sorted(kwargs)}")
 
@@ -311,7 +324,7 @@ class _YABTBase(BaseEstimator):
                                       "cat_count_features", "cat_combinations",
                                       "cat_combinations_min_card",
                                       "calibrate_multiclass", "svd_features",
-                                      "svd_min_features"])
+                                      "svd_min_features", "validation_fraction"])
 
     def _boost_params(self) -> BoostParams:
         return BoostParams(**{n: getattr(self, n) for n in _PARAM_NAMES})
@@ -462,10 +475,46 @@ class _YABTBase(BaseEstimator):
             Xp[:, p] = (Xc[:, i].astype(np.float64) + 1.0) * mult + Xc[:, j].astype(np.float64)
         return Xp
 
+    def _auto_eval_split(self, X, y, stratify: bool):
+        """Carve a seeded ``validation_fraction`` holdout to drive early
+        stopping when ``fit`` is called without an ``eval_set``. Skipped (and
+        the full data trained on, as before) when early stopping or the
+        fraction is disabled, or when the holdout would have fewer than 50
+        rows, where the stopping signal is mostly noise. Also skipped when
+        ``n_estimators <= early_stopping_rounds`` (stopping can then never
+        trigger, so the holdout would be pure training-data loss) and under
+        ``auto_tune``, which manages its own validation (CV on small data,
+        which a small carved holdout would preempt and degrade)."""
+        frac = float(self.validation_fraction or 0.0)
+        n = len(y)
+        if (self.early_stopping_rounds <= 0 or frac <= 0.0
+                or int(n * frac) < 50 or self.auto_tune
+                or self.n_estimators <= self.early_stopping_rounds):
+            return X, y, None
+        rng = np.random.default_rng(self.seed)
+        if stratify:
+            parts = []
+            for c in np.unique(y):
+                idx = np.flatnonzero(y == c)
+                k = min(int(round(len(idx) * frac)), len(idx) - 1)
+                if k > 0:
+                    parts.append(rng.permutation(idx)[:k])
+            val_idx = np.concatenate(parts) if parts else np.empty(0, dtype=np.intp)
+        else:
+            val_idx = rng.permutation(n)[: int(round(n * frac))]
+        if len(val_idx) == 0:
+            return X, y, None
+        mask = np.zeros(n, dtype=bool)
+        mask[val_idx] = True
+        Xa = np.asarray(X)
+        return Xa[~mask], y[~mask], (Xa[mask], y[mask])
+
     def fit(self, X, y, eval_set=None, categorical_features: list[int] | None = None):
         self._cat_idx = list(categorical_features) if categorical_features else []
         y = np.asarray(y, dtype=np.float32)
         y = _require_single_target(y)
+        if eval_set is None:
+            X, y, eval_set = self._auto_eval_split(X, y, stratify=False)
         yt = self._transform_y(y, fit=True)
         Xe = self._encode(X, yt, fit=True)
         ev = None
@@ -491,6 +540,8 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
         y = np.asarray(y, dtype=np.float32)
         self.classes_ = np.unique(y)
         self.n_classes_ = len(self.classes_)
+        if eval_set is None:
+            X, y, eval_set = self._auto_eval_split(X, y, stratify=True)
 
         self._is_binary = self.n_classes_ == 2
         if not self._is_binary and self.cat_per_class:

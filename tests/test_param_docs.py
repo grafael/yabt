@@ -26,11 +26,13 @@ README = Path(__file__).resolve().parent.parent / "README.md"
 ALL_PARAMS = {f.name for f in BoostParams.__dataclass_fields__.values()} | {
     "cat_smoothing", "cat_per_class", "cat_count_features", "cat_combinations",
     "cat_combinations_min_card", "calibrate_multiclass", "svd_features", "svd_min_features",
+    "validation_fraction",
 }
 EXTRA_DEFAULTS = {
     "cat_smoothing": 10.0, "cat_per_class": False, "cat_count_features": False,
     "cat_combinations": 0, "cat_combinations_min_card": 8,
     "calibrate_multiclass": False, "svd_features": 0, "svd_min_features": 32,
+    "validation_fraction": 0.15,
 }
 
 
