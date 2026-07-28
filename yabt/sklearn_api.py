@@ -6,7 +6,7 @@ import numpy as np
 from scipy.special import expit
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 
-from .binning import PermutationTargetEncoder
+from .binning import PermutationTargetEncoder, map_categories
 from .boosting import Booster, BoostParams, LogLoss, MSELoss
 from .multiclass import MulticlassBooster, SoftmaxBooster
 from .multitask import MultiTaskBooster
@@ -414,8 +414,7 @@ class _YABTBase(BaseEstimator):
         if self.cat_count_features:
             cnt = np.empty(Xc.shape, dtype=np.float32)
             for c in range(Xc.shape[1]):
-                m = self._cat_counts[c]
-                cnt[:, c] = [m.get(v, 0.0) for v in Xc[:, c]]
+                cnt[:, c] = map_categories(Xc[:, c], self._cat_counts[c], 0.0)
             extra.append(np.log1p(cnt))
         if getattr(self, "_pair_specs", None):
             Xp = self._pair_keys(Xc, fit=fit)

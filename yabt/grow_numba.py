@@ -349,7 +349,7 @@ def build_sparse_layout(binned: torch.Tensor):
 
     Computed once per fit from the (fixed) full binned matrix and reused across
     boosting rounds. On dense data the dominant bin covers few rows, so nnz ~= n*F
-    and there is no win; callers gate on the achieved density (see ``layout_density``).
+    and there is no win; callers gate on the estimated density (see ``estimate_density``).
     """
     bn = np.ascontiguousarray(binned.detach().cpu().numpy())
     n, F = bn.shape
@@ -365,11 +365,6 @@ def build_sparse_layout(binned: torch.Tensor):
     indices = cols_idx.astype(np.int64)
     data = bn[rows_idx, cols_idx].astype(np.int64)
     return indptr, indices, data, default_bin
-
-
-def layout_density(layout, n: int, F: int) -> float:
-    """Fraction of cells stored explicitly (nnz / (n*F)); lower = more savings."""
-    return float(len(layout[1]) / max(1, n * F))
 
 
 def estimate_density(binned: torch.Tensor, sample_rows: int = 4096) -> float:
@@ -423,7 +418,9 @@ def grow_tree_numba(
     if use_imat:
         imat = np.ascontiguousarray(interaction_matrix.detach().cpu().numpy().astype(np.float32))
     else:
-        imat = np.zeros((F, F), dtype=np.float32)
+        # Never read when use_imat is False; a 1x1 placeholder keeps numba's
+        # signature without allocating (and zeroing) F^2 floats per tree.
+        imat = np.zeros((1, 1), dtype=np.float32)
 
     if sparse_layout is not None:
         indptr, indices, data, default_bin = sparse_layout
@@ -436,10 +433,15 @@ def grow_tree_numba(
         use_sparse = False
 
     # Used bin count per feature: bin(x) = #{edges < x} in [0, len(edges)], so a
-    # feature uses at most len(edges)+1 bins; the split search skips the empty tail.
-    nbins = np.fromiter(
-        (min(len(e) + 1, MAX_BINS) for e in binner.edges_), dtype=np.int64, count=F
-    )
+    # feature uses at most len(edges)+1 bins; the split search skips the empty
+    # tail. Depends only on the (fixed) binner, so cache it there instead of
+    # walking F edge tensors in Python every round.
+    nbins = getattr(binner, "_nb_nbins", None)
+    if nbins is None or nbins.shape[0] != F:
+        nbins = np.fromiter(
+            (min(len(e) + 1, MAX_BINS) for e in binner.edges_), dtype=np.int64, count=F
+        )
+        binner._nb_nbins = nbins
 
     feat, thr_bin, left, right, value, depth = _grow(
         bn, gn, hn, fmask, imat, float(interaction_boost), use_imat,

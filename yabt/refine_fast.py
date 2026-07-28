@@ -61,7 +61,9 @@ def refine_tree_fast(
         return tree
 
     # Skip when the ensemble already fits well; refinement can only add noise.
-    if params.refine_min_gain > 0 and float(loss_fn.loss(margin, y)) < 0.001:
+    # The threshold is refine_min_gain itself, as documented -- it used to be a
+    # hardcoded 0.001, which silently reduced the parameter to an on/off flag.
+    if params.refine_min_gain > 0 and float(loss_fn.loss(margin, y)) < params.refine_min_gain:
         return tree
 
     lam = params.reg_lambda

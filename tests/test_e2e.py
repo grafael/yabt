@@ -70,3 +70,17 @@ def test_cpu_gpu_agreement():
     # Sanity: most rows still match closely; only a small fraction sit on the
     # divergent near-tie paths.
     assert np.mean(np.abs(preds[0] - preds[1]) < 2e-3) > 0.7
+
+
+def test_map_categories_matches_dict_lookup():
+    """map_categories replaces a per-row dict loop on the inference path; it must
+    agree with it exactly, including unseen values and NaN falling back."""
+    from yabt.binning import map_categories
+
+    rng = np.random.default_rng(0)
+    col = rng.integers(0, 20, 500).astype(np.float64)
+    m = {float(k): float(k) * 0.5 for k in range(10)}  # 10..19 are unseen
+    old = np.array([m.get(v, 3.0) for v in col], dtype=np.float32)
+    assert np.array_equal(old, map_categories(col, m, 3.0))
+    assert map_categories(np.array([1.0, np.nan]), {1.0: 5.0}, -1.0).tolist() == [5.0, -1.0]
+    assert map_categories(np.array(["a", "zz"], dtype=object), {"a": 1.0}, 0.0).tolist() == [1.0, 0.0]
