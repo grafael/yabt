@@ -392,12 +392,11 @@ def grow_tree_c(
         default_bin = np.zeros(1, dtype=np.int32)
         use_sparse = 0
 
-    # nbins depends only on the (fixed) binner, so cache it on the binner instead
-    # of rebuilding the Python generator every round.
+    # Used bin count per feature (real bins + any reserved NaN bin), cached on
+    # the (fixed) binner; the C side wants int32.
     nbins = getattr(binner, "_c_nbins", None)
     if nbins is None or nbins.shape[0] != F:
-        nbins = np.fromiter(
-            (min(len(e) + 1, MAX_BINS) for e in binner.edges_), dtype=np.int32, count=F)
+        nbins = binner.used_bins().astype(np.int32)
         binner._c_nbins = nbins
 
     max_leaves = int(params.max_leaves)

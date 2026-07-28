@@ -36,14 +36,23 @@
  * faster than row-major here, and the layout every serious GBDT lib uses. */
 static void build_hist(const uint8_t *binned, const float *grad,
                        const float *hess, const int64_t *rows, int64_t start,
-                       int64_t end, float *out, int F, int B, int64_t n) {
+                       int64_t end, float *out, const uint8_t *fmask, int F,
+                       int B, int64_t n) {
     /* The zero-fill is feature-parallel too: each thread clears only the slices
      * it then accumulates into. Hoisting a single serial memset of the whole
      * 3*F*B histogram out front was a real Amdahl bottleneck -- it ran for every
      * node (incl. the many tiny ones near the leaves) on one core while the
-     * other cores idled. */
+     * other cores idled.
+     *
+     * Column-subsampled features are skipped outright -- neither zeroed nor
+     * accumulated. Their slices hold garbage, which is safe because every reader
+     * is mask-aware: best_split skips them, hist_sub subtracts only sampled
+     * ones, and the node G/H sums are read off a sampled reference feature.
+     * colsample used to buy nothing here: the histogram is the dominant per-node
+     * term and it ignored the mask, which only reached the split search. */
 #pragma omp parallel for schedule(static)
     for (int f = 0; f < F; f++) {
+        if (!fmask[f]) continue;
         float *og = out + (size_t)0 * F * B + (size_t)f * B;
         float *oh = out + (size_t)1 * F * B + (size_t)f * B;
         float *oc = out + (size_t)2 * F * B + (size_t)f * B;
@@ -61,6 +70,23 @@ static void build_hist(const uint8_t *binned, const float *grad,
     }
 }
 
+/* Sibling subtraction over the column-sampled features only: h_out = h_in -
+ * h_sub on each sampled feature's three slices. This is O(F*B) per node and at
+ * F in the thousands it rivals the histogram build itself, so honoring the mask
+ * here matters as much as it does in build_hist. Unsampled slices are left
+ * untouched (see build_hist). */
+static void hist_sub(float *h_out, const float *h_in, const float *h_sub,
+                     const uint8_t *fmask, int F, int B) {
+#pragma omp parallel for schedule(static)
+    for (int f = 0; f < F; f++) {
+        if (!fmask[f]) continue;
+        for (int c = 0; c < 3; c++) {
+            size_t o = (size_t)c * F * B + (size_t)f * B;
+            for (int b = 0; b < B; b++) h_out[o + b] = h_in[o + b] - h_sub[o + b];
+        }
+    }
+}
+
 /* Sparse (CSR-of-non-default-bins) histogram. Kept serial: a row touches an
  * arbitrary set of features, so it is not naturally feature-parallel. The wide
  * sparse path already turns O(n*F) into O(nnz+F); the split search below still
@@ -70,8 +96,18 @@ static void build_hist_sparse(const int64_t *indptr, const int32_t *indices,
                               const float *grad, const float *hess,
                               const int64_t *rows, int64_t start, int64_t end,
                               float *out, double *expl_g, double *expl_h,
-                              double *expl_c, int F, int B) {
-    memset(out, 0, (size_t)3 * F * B * sizeof(float));
+                              double *expl_c, const uint8_t *fmask, int F,
+                              int B) {
+    /* Zero (and later default-bin-fill) only the sampled features: the bulk
+     * memset is O(F*B) and on wide sparse data it is a real share of the node
+     * cost. Unsampled slices are garbage by construction -- see build_hist. */
+#pragma omp parallel for schedule(static)
+    for (int f = 0; f < F; f++) {
+        if (!fmask[f]) continue;
+        for (int c = 0; c < 3; c++)
+            memset(out + (size_t)c * F * B + (size_t)f * B, 0,
+                   (size_t)B * sizeof(float));
+    }
     for (int f = 0; f < F; f++) {
         expl_g[f] = 0.0;
         expl_h[f] = 0.0;
@@ -99,6 +135,7 @@ static void build_hist_sparse(const int64_t *indptr, const int32_t *indices,
         }
     }
     for (int f = 0; f < F; f++) {
+        if (!fmask[f]) continue;
         int df = default_bin[f];
         o0[(size_t)f * B + df] += (float)(G - expl_g[f]);
         o1[(size_t)f * B + df] += (float)(H - expl_h[f]);
@@ -295,15 +332,26 @@ int cgrow(const uint8_t *binned, const float *grad, const float *hess,
     node_depth[0] = 0;
     if (use_sparse)
         build_hist_sparse(indptr, indices, data, default_bin, grad, hess, rows,
-                          0, n, hist_store, expl_g, expl_h, expl_c, F, B);
+                          0, n, hist_store, expl_g, expl_h, expl_c, fmask, F, B);
     else
-        build_hist(binned, grad, hess, rows, 0, n, hist_store, F, B, n);
+        build_hist(binned, grad, hess, rows, 0, n, hist_store, fmask, F, B, n);
 
-    /* Node total G,H = sum over bins of feature 0's histogram. */
+    /* Node total G,H = sum over bins of the reference feature's histogram --
+     * the lowest column-sampled one, since unsampled slices are never written.
+     * If nothing at all is sampled (callers always keep >= 1 column, but the
+     * kernel should not read uninitialized memory either way) zero the slices
+     * we are about to sum, which yields a single leaf of value 0. */
+    int rf = 0;
+    while (rf < F && !fmask[rf]) rf++;
+    if (rf == F) {
+        rf = 0;
+        for (int c = 0; c < 3; c++)
+            memset(hist_store + (size_t)c * F * B, 0, (size_t)B * sizeof(float));
+    }
     double Gsum = 0.0, Hsum = 0.0;
     for (int b = 0; b < B; b++) {
-        Gsum += hist_store[(size_t)0 * F * B + 0 * B + b];
-        Hsum += hist_store[(size_t)1 * F * B + 0 * B + b];
+        Gsum += hist_store[(size_t)0 * F * B + (size_t)rf * B + b];
+        Hsum += hist_store[(size_t)1 * F * B + (size_t)rf * B + b];
     }
     value[0] = (float)(-lr * Gsum / (Hsum + lam));
     int n_nodes = 1;
@@ -355,25 +403,27 @@ int cgrow(const uint8_t *binned, const float *grad, const float *hess,
         if ((mid - s) <= (e - mid)) {
             if (use_sparse)
                 build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
-                                  rows, s, mid, h_nl, expl_g, expl_h, expl_c, F, B);
+                                  rows, s, mid, h_nl, expl_g, expl_h, expl_c,
+                                  fmask, F, B);
             else
-                build_hist(binned, grad, hess, rows, s, mid, h_nl, F, B, n);
-            for (size_t i = 0; i < hsz; i++) h_nr[i] = h_nid[i] - h_nl[i];
+                build_hist(binned, grad, hess, rows, s, mid, h_nl, fmask, F, B, n);
+            hist_sub(h_nr, h_nid, h_nl, fmask, F, B);
         } else {
             if (use_sparse)
                 build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
-                                  rows, mid, e, h_nr, expl_g, expl_h, expl_c, F, B);
+                                  rows, mid, e, h_nr, expl_g, expl_h, expl_c,
+                                  fmask, F, B);
             else
-                build_hist(binned, grad, hess, rows, mid, e, h_nr, F, B, n);
-            for (size_t i = 0; i < hsz; i++) h_nl[i] = h_nid[i] - h_nr[i];
+                build_hist(binned, grad, hess, rows, mid, e, h_nr, fmask, F, B, n);
+            hist_sub(h_nl, h_nid, h_nr, fmask, F, B);
         }
 
         double gl = 0.0, hl = 0.0, gr = 0.0, hr = 0.0;
         for (int bb = 0; bb < B; bb++) {
-            gl += h_nl[(size_t)0 * F * B + 0 * B + bb];
-            hl += h_nl[(size_t)1 * F * B + 0 * B + bb];
-            gr += h_nr[(size_t)0 * F * B + 0 * B + bb];
-            hr += h_nr[(size_t)1 * F * B + 0 * B + bb];
+            gl += h_nl[(size_t)0 * F * B + (size_t)rf * B + bb];
+            hl += h_nl[(size_t)1 * F * B + (size_t)rf * B + bb];
+            gr += h_nr[(size_t)0 * F * B + (size_t)rf * B + bb];
+            hr += h_nr[(size_t)1 * F * B + (size_t)rf * B + bb];
         }
         value[nl] = (float)(-lr * gl / (hl + lam));
         value[nr] = (float)(-lr * gr / (hr + lam));

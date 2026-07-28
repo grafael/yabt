@@ -72,10 +72,22 @@ def test_auto_tune_uses_external_eval_set():
 
 
 def test_auto_tune_deterministic():
+    """Same seed, same selection.
+
+    Pinned to CPU: fits are only bitwise reproducible there. On CUDA the
+    per-leaf normal equations in neural_leaves._fit_linear are assembled with
+    index_add_, whose atomicAdd ordering is nondeterministic, so two identical
+    GPU fits differ in the last float32 digits -- enough to reorder candidates
+    whose validation losses are close. Pre-existing and independent of tuning;
+    fixing it means giving up the batched scatter assembly.
+    """
     X, y = _classification(2000, seed=4)
-    a = YABTClassifier(n_estimators=40, auto_tune=True, refine_steps=0, seed=0).fit(X, y)
-    b = YABTClassifier(n_estimators=40, auto_tune=True, refine_steps=0, seed=0).fit(X, y)
+    kw = dict(n_estimators=40, auto_tune=True, refine_steps=0, seed=0, device="cpu")
+    a = YABTClassifier(**kw).fit(X, y)
+    b = YABTClassifier(**kw).fit(X, y)
     assert a.booster_.tuning_report_["selected"] == b.booster_.tuning_report_["selected"]
+    assert ([r["val_loss"] for r in a.booster_.tuning_report_["results"]]
+            == [r["val_loss"] for r in b.booster_.tuning_report_["results"]])
 
 
 def test_auto_tune_regressor():

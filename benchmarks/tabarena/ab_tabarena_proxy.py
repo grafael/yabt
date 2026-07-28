@@ -87,6 +87,12 @@ CONFIGS: dict[str, dict] = {
     "r5_tabfm": {"learning_rate": 0.05, "colsample": 0.9, "subsample": 0.9,
                  "cat_count_features": True, "cat_combinations": 16,
                  "calibrate_multiclass": True, "svd_features": 8},
+    # round 6: identical params to r5_ship, re-measured after the missing-value
+    # rework (NaN gets its own bin instead of being median-imputed) and the
+    # mask-aware histogram build. Same name would overwrite the r5 row, so this
+    # is the paired before/after: r5_ship = old code, r6_nanbin = new code.
+    "r6_nanbin": {"learning_rate": 0.05, "colsample": 0.9, "subsample": 0.9,
+                  "cat_count_features": True, "cat_combinations": 16},
 }
 
 

@@ -40,6 +40,7 @@ class MulticlassBooster:
         X: np.ndarray,
         y: np.ndarray,
         eval_set: tuple[np.ndarray, np.ndarray] | None = None,
+        sample_weight: np.ndarray | None = None,
     ) -> MulticlassBooster:
         self.classes_ = np.unique(y)
         for class_label in self.classes_:
@@ -49,7 +50,8 @@ class MulticlassBooster:
                 y_eval = (eval_set[1] == class_label).astype(np.float32)
                 eval_set_binary = (eval_set[0], y_eval)
             booster = Booster(self.params, LogLoss())
-            booster.fit(X, y_binary, eval_set=eval_set_binary)
+            booster.fit(X, y_binary, eval_set=eval_set_binary,
+                        sample_weight=sample_weight)
             self.boosters_.append(booster)
         return self
 
@@ -105,6 +107,7 @@ class SoftmaxBooster:
         X: np.ndarray,
         y: np.ndarray,
         eval_set: tuple[np.ndarray, np.ndarray] | None = None,
+        sample_weight: np.ndarray | None = None,
     ) -> "SoftmaxBooster":
         p = self.params
         dev = self.device_ = p.resolve_device()
@@ -122,9 +125,15 @@ class SoftmaxBooster:
         Xraw = torch.from_numpy(self.binner.impute(X)).to(dev)
         n, F = Xraw.shape
         onehot = torch.nn.functional.one_hot(yi, K).to(torch.float32)
+        wt = (None if sample_weight is None else
+              torch.as_tensor(np.asarray(sample_weight, dtype=np.float32), device=dev))
+        if wt is not None and wt.shape[0] != n:
+            raise ValueError(f"sample_weight has {wt.shape[0]} entries for {n} rows")
 
         # Log-prior init, the softmax analogue of LogLoss.base_score.
-        prior = (onehot.mean(dim=0)).clamp(1e-6, 1 - 1e-6)
+        prior = ((onehot.mean(dim=0) if wt is None else
+                  (onehot * wt[:, None]).sum(dim=0) / wt.sum().clamp_min(1e-12))
+                 ).clamp(1e-6, 1 - 1e-6)
         self.base_scores_ = torch.log(prior).cpu().numpy()
         M = torch.log(prior).expand(n, K).contiguous()
 
@@ -140,7 +149,7 @@ class SoftmaxBooster:
             from .adaptive_features import FeatureInteractionDetector
             engine.interaction_detector = FeatureInteractionDetector(F, device=dev)
 
-        tp = engine._tree_params()
+        tp = engine._tree_params(n)
         self.trees_ = [[] for _ in range(K)]
 
         for t in range(p.n_estimators):
@@ -163,6 +172,8 @@ class SoftmaxBooster:
                 pk = P[:, k]
                 grad = pk - onehot[:, k]
                 hess = (pk * (1 - pk)).clamp_min(1e-6)
+                if wt is not None:
+                    grad, hess = grad * wt, hess * wt
 
                 tp_t = tp
                 if p.min_split_gain_rel > 0.0:
@@ -184,7 +195,8 @@ class SoftmaxBooster:
                     # log loss at the shifted margin m_k - log(sum_{j!=k} e^{m_j}).
                     shifted = M[:, k] - lse - torch.log1p(-pk.clamp(max=1 - 1e-6))
                     tree = fit_leaf_networks(tree, Xraw, onehot[:, k], shifted,
-                                             LogLoss(), p, gen, leaf_idx=leaf_idx)
+                                             LogLoss(), p, gen, leaf_idx=leaf_idx,
+                                             weights=wt)
 
                 if engine.interaction_detector is not None:
                     engine.interaction_detector.update_from_path_pairs(tree.path_feature_pairs())

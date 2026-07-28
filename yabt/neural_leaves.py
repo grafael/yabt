@@ -137,6 +137,7 @@ def fit_leaf_networks(
     params,
     gen: torch.Generator,
     leaf_idx: torch.Tensor | None = None,
+    weights: torch.Tensor | None = None,
 ) -> Tree:
     dev = Xraw.device
     # Adding leaf nets does not change routing, so callers that already routed
@@ -145,6 +146,10 @@ def fit_leaf_networks(
     if leaf_idx is None:
         leaf_idx = tree.apply(Xraw)
     grad, hess = loss_fn.grad_hess(margin + tree.value[leaf_idx], y)
+    if weights is not None:
+        # Same weighting as the tree itself: the leaf models solve the Newton
+        # objective, so scaling (g, h) scales each row's contribution to it.
+        grad, hess = grad * weights, hess * weights
     feats = _select_features(tree, Xraw, grad, params.leaf_net_features)
     if feats.numel() == 0:
         return tree

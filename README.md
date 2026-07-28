@@ -16,8 +16,8 @@ works as a drop-in replacement for XGBoost/LightGBM-style estimators.
 > On [TabArena](#benchmark-results-tabarena) its default config is the
 > second-strongest GBDT default after CatBoost's, at the fastest train time in
 > that group (CPU-to-CPU), but it has none of a mature library's hardening
-> (sparse inputs, distributed training, model serialization guarantees,
-> ecosystem tooling).
+> (distributed training, out-of-core training, ecosystem tooling). SciPy sparse
+> input is accepted but densified, not exploited.
 
 ## How it works
 
@@ -50,6 +50,8 @@ sections below have the details and the measured trade-offs.
 | Differentiable refinement | `refine_steps` | off | gradient-descent polish of splits and leaves (set `refine_steps>0`) |
 | Kernel splits | `kernel_splits` | off | non-linear RBF "blob" splits at a node |
 | Stochastic routing | `stochastic_routing` | off | smooth, probabilistic predictions |
+| Seed ensembling | `n_ensemble` | off (1) | average several seeds to cut variance |
+| Small-data caps | `small_data_caps` | off | cap the tree budget below 2000 rows |
 | Auto-tuning | `auto_tune` | off | picks hyperparameters per dataset before fitting |
 | Adaptive features | `adaptive_features` | off | feature importance learned during training |
 | GOSS sampling | `goss_enabled` | off | keep big-error rows, subsample the rest |
@@ -126,6 +128,52 @@ Categorical columns are handled natively — pass their indices as
 `categorical_features=[...]` to `fit` and they are target-encoded leakage-free
 (see the `cat_*` parameters for count features, pair combinations, and
 per-class multiclass encodings).
+
+Per-row weights are supported on every estimator
+(`fit(X, y, sample_weight=w)`): they scale the Newton gradients and Hessians,
+so they weight the split gains, the leaf values and the per-leaf models alike.
+Note that the binner's quantile edges, `min_samples_leaf` and
+`leaf_net_min_samples` still count rows, so a zero weight silences a row's
+influence on the objective without removing it from the data.
+
+Fitted estimators pickle and unpickle to bit-identical predictions
+(`tests/test_sklearn_api_surface.py`); there is no versioned on-disk format, so
+a pickle is only readable by a compatible YABT/PyTorch.
+
+### Missing values
+
+NaNs get their own bin, above every real value of their feature: a column with
+missing values in the training data gives up one bin of resolution and reserves
+the top index for them, and the raw-space sentinel `impute` fills in is chosen
+so `x <= threshold` is False for a missing value at every real threshold —
+matching what the binned matrix says. Missingness is therefore an ordinary
+extreme category the trees can split off, and no grower needs a NaN branch.
+
+The previous behavior, median imputation, merged missing rows into the middle
+of the distribution and destroyed informative missingness. Paired A/B over the
+datasets that actually carry NaNs:
+
+| dataset | rows | NaN | median impute | own NaN bin |
+|---|--:|--:|--:|--:|
+| polish_companies_bankruptcy | 5910 | 1.2% | 0.05847 | **0.05023** (-14.1%) |
+| kick | 72983 | 0.06% | 0.22634 | **0.22522** (-0.5%) |
+| APSFailure | 76000 | 8.3% | 0.00903 | 0.00901 (neutral) |
+| hepatitis | 155 | 4.1% | 0.22310 | 0.22315 (neutral) |
+| colic | 368 | 8.2% | 0.09381 | 0.09917 (+5.7%, within noise) |
+
+(1 - ROC AUC, lower is better; APSFailure/hepatitis/colic re-measured at 12-40
+fits each because the first 3-fold pass could not separate them from noise.) A
+large win where missingness carries signal, neutral where it does not, and
+exactly neutral on data with no NaNs at all — the bins there are unchanged.
+
+A *learned per-split* direction (LightGBM/XGBoost style) is not worth the extra
+machinery on top — XGBoost with its NaNs pre-replaced by this same kind of
+sentinel scores 0.04119 on polish against 0.04142 for its own per-node
+direction.
+
+A NaN arriving at predict time in a column that had none during training has no
+reserved bin; it lands in the top real bin, which still routes it consistently,
+just not separably.
 
 See `benchmarks/` for the [TabArena](https://github.com/autogluon/tabarena)
 benchmark harness and results against XGBoost, LightGBM, CatBoost, and 70+
@@ -340,6 +388,27 @@ per candidate. Pass your own `eval_set` and it tunes against that instead of
 an internal split. The chosen configuration is reported on
 `booster_.tuning_report_`.
 
+## Seed ensembling
+
+`n_ensemble=k` fits `k` boosters that differ only in seed and averages them
+(margins for regression and binary, probabilities for multiclass). It is pure
+variance reduction, so it only does anything when training is stochastic —
+with `subsample` and `colsample` both at 1.0 the members are identical and you
+have paid `k` times over for one model.
+
+```python
+clf = YABTClassifier(n_ensemble=4, subsample=0.9, colsample=0.9)
+```
+
+On TabArena-Lite, `n_ensemble=4` is Elo 1289 against 1266 for a single fit
+(rank 32 vs 36), at about 3.9x the train time. A local A/B over 11 datasets
+agrees: median -1.4% metric error, better on 9 of 11. Off by default because
+of the cost, not the accuracy.
+
+`booster_` is then a `SeedEnsemble`; its members are in `booster_.members_`,
+and attribute lookups (`booster_.binner`, `booster_.top_interactions()`) fall
+through to the first member.
+
 ## Multi-task learning
 
 `YABTMultiTaskRegressor` predicts several targets at once by growing one
@@ -393,6 +462,8 @@ not apply to its shared-structure path.
 | `subsample` | `1.0` | Row subsampling ratio drawn per tree. |
 | `colsample` | `1.0` | Column (feature) subsampling ratio per tree. |
 | `max_bins` | `256` | Number of histogram bins used to discretize features. |
+| `small_data_caps` | `False` | Cap the tree budget to 16 leaves / depth 4 below 2000 rows, where the default 31-leaf budget can overfit. Caps only, never inflations. Off by default: across eight sub-2000-row datasets this is a median +0.36% metric error with a real regression tail (climate-model +6.6%, airfoil_self_noise +5.2%) even though it wins big where it lands (qsar-biodeg -7.7%), so `auto_tune` offers it as a candidate and deploys it only where a validation split says it helps. |
+| `n_ensemble` | `1` | Fit this many boosters differing only in seed and average them. Pure variance reduction, so it does nothing unless training is stochastic (`subsample`/`colsample` < 1). TabArena-Lite at 4: +22 Elo (1266 -> 1289) for ~3.9x the train time, hence opt-in. |
 | **Differentiable refinement** | | |
 | `refine_steps` | `0` | Gradient-descent refinement steps applied to splits and leaves after each tree (0 disables; effective steps adapt to dataset size). Off by default: costs ~10% of fit time for negligible gain on real tabular data. Opt in with `refine_steps > 0`. |
 | `refine_lr` | `0.02` | Learning rate for differentiable refinement. |

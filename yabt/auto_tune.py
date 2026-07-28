@@ -21,6 +21,8 @@ CV_FOLDS = 3
 
 
 def _candidates(n: int) -> list[tuple[str, dict]]:
+    from .boosting import _SMALL_N_ROWS  # local import: boosting imports this module
+
     cands = [
         ("user-config", {}),
         ("slow-deep", {"learning_rate": 0.05, "max_leaves": 63}),
@@ -39,9 +41,20 @@ def _candidates(n: int) -> list[tuple[str, dict]]:
         ("regularized-splits", {"min_split_gain_rel": 0.5}),
         ("regularized-splits-strong", {"min_split_gain_rel": 2.0, "max_leaves": 15}),
         ("fine-grain", {"min_samples_leaf": 5, "max_leaves": 63}),
+        # Small data: cap the tree budget to 16 leaves / depth 4. Worth a lot
+        # where it lands (qsar-biodeg -7.7%, credit-g -3.4%) and a real loss
+        # where it does not (climate-model-simulation-crashes +6.6%,
+        # airfoil_self_noise +5.2%), median only +0.36% over eight sub-2000-row
+        # datasets -- exactly the shape that belongs behind a validation gate
+        # rather than in the defaults.
+        ("small-data-caps", {"small_data_caps": True}),
     ]
     if n < 5000:
         cands = [c for c in cands if c[0] != "fine-grain"]  # overfits small data
+    if n >= _SMALL_N_ROWS:
+        # The caps only bind below _SMALL_N_ROWS; above it this candidate is a
+        # bit-identical duplicate of user-config, so it would just cost a fit.
+        cands = [c for c in cands if c[0] != "small-data-caps"]
     return cands
 
 

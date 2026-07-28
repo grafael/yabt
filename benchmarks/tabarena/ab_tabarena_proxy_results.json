@@ -6166,5 +6166,275 @@
    }
   },
   "total_s": 133.9142394065857
+ },
+ "r6_nanbin": {
+  "params": {
+   "n_estimators": 10000,
+   "early_stopping_rounds": 50,
+   "seed": 0,
+   "learning_rate": 0.05,
+   "colsample": 0.9,
+   "subsample": 0.9,
+   "cat_count_features": true,
+   "cat_combinations": 16
+  },
+  "datasets": {
+   "airfoil_self_noise": {
+    "problem": "regression",
+    "err": 1.6248030910032425,
+    "s": 15.507574319839478
+   },
+   "Amazon_employee_access": {
+    "problem": "binary",
+    "err": 0.14877130871389388,
+    "s": 0.9027416706085205
+   },
+   "anneal": {
+    "problem": "multiclass",
+    "err": 0.1399699485849334,
+    "s": 1.637317419052124
+   },
+   "Another-Dataset-on-used-Fiat-500": {
+    "problem": "regression",
+    "err": 718.433169299692,
+    "s": 1.2773938179016113
+   },
+   "APSFailure": {
+    "problem": "binary",
+    "err": 0.006372866511205277,
+    "s": 1.555898666381836
+   },
+   "bank-marketing": {
+    "problem": "binary",
+    "err": 0.22685521663025887,
+    "s": 0.7544114589691162
+   },
+   "Bank_Customer_Churn": {
+    "problem": "binary",
+    "err": 0.13386751870064806,
+    "s": 0.887322187423706
+   },
+   "Bioresponse": {
+    "problem": "binary",
+    "err": 0.11339686069797739,
+    "s": 2.7502224445343018
+   },
+   "blood-transfusion-service-center": {
+    "problem": "binary",
+    "err": 0.3213157894736842,
+    "s": 0.4614100456237793
+   },
+   "churn": {
+    "problem": "binary",
+    "err": 0.056923568915893785,
+    "s": 0.6423275470733643
+   },
+   "coil2000_insurance_policies": {
+    "problem": "binary",
+    "err": 0.26476045336064813,
+    "s": 0.6636216640472412
+   },
+   "concrete_compressive_strength": {
+    "problem": "regression",
+    "err": 4.6189669876851465,
+    "s": 7.120209693908691
+   },
+   "credit-g": {
+    "problem": "binary",
+    "err": 0.25235042735042734,
+    "s": 0.41561102867126465
+   },
+   "credit_card_clients_default": {
+    "problem": "binary",
+    "err": 0.21112199902293227,
+    "s": 0.5947878360748291
+   },
+   "customer_satisfaction_in_airline": {
+    "problem": "binary",
+    "err": 0.0067391139813696155,
+    "s": 6.140608787536621
+   },
+   "diabetes": {
+    "problem": "binary",
+    "err": 0.1714859437751004,
+    "s": 0.46049046516418457
+   },
+   "Diabetes130US": {
+    "problem": "binary",
+    "err": 0.3285421200473988,
+    "s": 1.4424676895141602
+   },
+   "diamonds": {
+    "problem": "regression",
+    "err": 534.1472467868762,
+    "s": 1.375192403793335
+   },
+   "E-CommereShippingData": {
+    "problem": "binary",
+    "err": 0.26122478872403776,
+    "s": 0.7916061878204346
+   },
+   "Fitness_Club": {
+    "problem": "binary",
+    "err": 0.20617816091954022,
+    "s": 0.6956541538238525
+   },
+   "Food_Delivery_Time": {
+    "problem": "regression",
+    "err": 7.446086639154353,
+    "s": 1.6860454082489014
+   },
+   "GiveMeSomeCredit": {
+    "problem": "binary",
+    "err": 0.1307901622612191,
+    "s": 0.805513858795166
+   },
+   "hazelnut-spread-contaminant-detection": {
+    "problem": "binary",
+    "err": 0.03036250000000007,
+    "s": 1.871527910232544
+   },
+   "healthcare_insurance_expenses": {
+    "problem": "regression",
+    "err": 4356.474951150299,
+    "s": 1.280139446258545
+   },
+   "heloc": {
+    "problem": "binary",
+    "err": 0.20730732974284272,
+    "s": 0.6108574867248535
+   },
+   "hiva_agnostic": {
+    "problem": "multiclass",
+    "err": 0.1745896655953832,
+    "s": 6.838787794113159
+   },
+   "houses": {
+    "problem": "regression",
+    "err": 0.21769447776898615,
+    "s": 5.37934422492981
+   },
+   "HR_Analytics_Job_Change_of_Data_Scientists": {
+    "problem": "binary",
+    "err": 0.19083383647482288,
+    "s": 0.6438994407653809
+   },
+   "in_vehicle_coupon_recommendation": {
+    "problem": "binary",
+    "err": 0.20345841725778668,
+    "s": 1.4150114059448242
+   },
+   "Is-this-a-good-customer": {
+    "problem": "binary",
+    "err": 0.3254747871643746,
+    "s": 0.9464497566223145
+   },
+   "kddcup09_appetency": {
+    "problem": "binary",
+    "err": 0.18337662925323273,
+    "s": 1.5811598300933838
+   },
+   "Marketing_Campaign": {
+    "problem": "binary",
+    "err": 0.08618760269703674,
+    "s": 0.8522317409515381
+   },
+   "maternal_health_risk": {
+    "problem": "multiclass",
+    "err": 0.4516327809730832,
+    "s": 4.0813000202178955
+   },
+   "miami_housing": {
+    "problem": "regression",
+    "err": 89866.3241932149,
+    "s": 4.508876800537109
+   },
+   "NATICUSdroid": {
+    "problem": "binary",
+    "err": 0.018224859746408417,
+    "s": 1.0586838722229004
+   },
+   "online_shoppers_intention": {
+    "problem": "binary",
+    "err": 0.07156622601680773,
+    "s": 0.6264686584472656
+   },
+   "physiochemical_protein": {
+    "problem": "regression",
+    "err": 3.618051116869045,
+    "s": 16.23073697090149
+   },
+   "polish_companies_bankruptcy": {
+    "problem": "binary",
+    "err": 0.038568862659567604,
+    "s": 0.8085212707519531
+   },
+   "qsar-biodeg": {
+    "problem": "binary",
+    "err": 0.09932556713672602,
+    "s": 0.542651891708374
+   },
+   "QSAR-TID-11": {
+    "problem": "regression",
+    "err": 0.8531783635703291,
+    "s": 9.370468854904175
+   },
+   "QSAR_fish_toxicity": {
+    "problem": "regression",
+    "err": 0.9472082690935585,
+    "s": 0.8866851329803467
+   },
+   "SDSS17": {
+    "problem": "multiclass",
+    "err": 0.07914971380363553,
+    "s": 2.812093734741211
+   },
+   "seismic-bumps": {
+    "problem": "binary",
+    "err": 0.23826958701100576,
+    "s": 0.821901798248291
+   },
+   "splice": {
+    "problem": "multiclass",
+    "err": 0.09876143934904241,
+    "s": 2.0188302993774414
+   },
+   "students_dropout_and_academic_success": {
+    "problem": "multiclass",
+    "err": 0.5817496284507796,
+    "s": 1.7723143100738525
+   },
+   "superconductivity": {
+    "problem": "regression",
+    "err": 9.603909459397089,
+    "s": 6.856842279434204
+   },
+   "taiwanese_bankruptcy_prediction": {
+    "problem": "binary",
+    "err": 0.0646388542963886,
+    "s": 0.6275503635406494
+   },
+   "website_phishing": {
+    "problem": "multiclass",
+    "err": 0.34532313493096867,
+    "s": 1.4792370796203613
+   },
+   "wine_quality": {
+    "problem": "regression",
+    "err": 0.6473073187356709,
+    "s": 1.0975396633148193
+   },
+   "MIC": {
+    "problem": "multiclass",
+    "err": 0.5400390446214827,
+    "s": 3.1808528900146484
+   },
+   "jm1": {
+    "problem": "binary",
+    "err": 0.25224065751909963,
+    "s": 0.638007402420044
+   }
+  },
+  "total_s": 131.83975768089294
  }
 }

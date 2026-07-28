@@ -23,13 +23,32 @@ from .adaptive_features import (
 # "on by default" flag is gated off below this row count.
 _INTERACTION_MIN_ROWS = 2000
 
+# Small-data tree budget, used by the ``small_data_caps`` opt-in. Below this row
+# count the default 31 leaves / unbounded depth is more capacity than the data
+# supports, and the small-data band is where the whole TabArena gap to CatBoost
+# lives (over the 15 smallest TabArena-Lite datasets YABT's median metric error
+# is 7.0% worse and it wins 3; over the 35 larger ones, +0.4% and 14 wins).
+#
+# But capping is NOT a safe default. On the three datasets that first suggested
+# it the win looked large (qsar-biodeg -7.7%, credit-g -3.4%, blood-transfusion
+# -2.1%); widening to eight sub-2000-row datasets collapses it to a median
+# +0.36% with a real regression tail (climate-model-simulation-crashes +6.6%,
+# airfoil_self_noise +5.2%) -- the original three were where the effect was
+# discovered, so they were the wrong place to measure it. Shipped instead as an
+# auto_tune candidate, deployed only where a validation split says it wins, the
+# same resolution min_split_gain_rel got for the same reason.
+_SMALL_N_ROWS = 2000
+_SMALL_N_MAX_LEAVES = 16
+_SMALL_N_MAX_DEPTH = 4
+
 
 class LogLoss:
     is_classification = True
 
     @staticmethod
-    def base_score(y: torch.Tensor) -> float:
-        p = float(y.mean().clamp(1e-6, 1 - 1e-6))
+    def base_score(y: torch.Tensor, w: torch.Tensor | None = None) -> float:
+        mean = y.mean() if w is None else (y * w).sum() / w.sum().clamp_min(1e-12)
+        p = float(mean.clamp(1e-6, 1 - 1e-6))
         return float(np.log(p / (1 - p)))
 
     @staticmethod
@@ -46,8 +65,10 @@ class MSELoss:
     is_classification = False
 
     @staticmethod
-    def base_score(y: torch.Tensor) -> float:
-        return float(y.mean())
+    def base_score(y: torch.Tensor, w: torch.Tensor | None = None) -> float:
+        if w is None:
+            return float(y.mean())
+        return float((y * w).sum() / w.sum().clamp_min(1e-12))
 
     @staticmethod
     def grad_hess(margin: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -193,6 +214,18 @@ class BoostParams:
     # loop does not support (kernel splits, GOSS, adaptive/product features,
     # refinement/refit, auto-tune, stochastic routing).
     multiclass: str = "softmax"
+    # Cap the tree budget to 16 leaves / depth 4 below 2000 rows (see
+    # _SMALL_N_ROWS). Caps only, never inflations. Off by default: across eight
+    # sub-2000-row datasets it is a median +0.36% with a regression tail, so it
+    # is offered as an auto_tune candidate rather than applied blind.
+    small_data_caps: bool = False
+    # Seed ensembling: fit this many boosters differing only in seed and average
+    # them. Pure variance reduction, so it only does something when training is
+    # stochastic (subsample/colsample < 1) -- with both at 1.0 the members are
+    # identical and this just multiplies the cost. Measured on TabArena-Lite:
+    # n_ensemble=4 is +22 Elo (1266 -> 1289, rank 36 -> 32) at ~3.9x train time,
+    # so it is opt-in rather than a default.
+    n_ensemble: int = 1
     # Training control. Early stopping is on by default: the sklearn estimators
     # carve a validation_fraction holdout when fit gets no eval_set, so the
     # tree count adapts to the dataset instead of overfitting small data at the
@@ -206,6 +239,42 @@ class BoostParams:
         if self.device == "auto":
             return "cuda" if torch.cuda.is_available() else "cpu"
         return self.device
+
+
+class SeedEnsemble:
+    """``n_ensemble`` boosters that differ only in seed, averaged.
+
+    Pure variance reduction: each member sees different row/column subsamples,
+    and averaging their margins (or, for multiclass, their probabilities) cancels
+    the part of each fit that was seed noise rather than signal. Measured on
+    TabArena-Lite at n_ensemble=4: Elo 1266 -> 1289 (rank 36 -> 32) for ~3.9x the
+    train time.
+
+    Attribute lookups fall through to the first member, so ``booster_.binner``,
+    ``booster_.tuning_report_``, ``booster_.top_interactions()`` and friends keep
+    working -- they describe one representative fit, not the average.
+    """
+
+    def __init__(self, members: list):
+        self.members_ = members
+
+    def fit(self, X, y, eval_set=None, sample_weight=None) -> "SeedEnsemble":
+        for m in self.members_:
+            m.fit(X, y, eval_set=eval_set, sample_weight=sample_weight)
+        return self
+
+    def predict_margin(self, X, **kw) -> np.ndarray:
+        return np.mean([m.predict_margin(X, **kw) for m in self.members_], axis=0)
+
+    def predict_proba(self, X) -> np.ndarray:
+        return np.mean([m.predict_proba(X) for m in self.members_], axis=0)
+
+    def __getattr__(self, name):
+        try:
+            members = object.__getattribute__(self, "members_")
+        except AttributeError:
+            raise AttributeError(name) from None
+        return getattr(members[0], name)
 
 
 class Booster:
@@ -267,10 +336,19 @@ class Booster:
         self._sparse_decided = True
         return self._sparse_layout
 
-    def _tree_params(self) -> TreeParams:
+    def _tree_params(self, n: int | None = None) -> TreeParams:
         p = self.p
+        max_leaves, max_depth = p.max_leaves, p.max_depth
+        # Small-data capacity caps (see _SMALL_N_ROWS). Caps, never inflations,
+        # matching how refine_steps is bounded for small data below.
+        if p.small_data_caps and n is not None and n < _SMALL_N_ROWS:
+            max_leaves = min(max_leaves, _SMALL_N_MAX_LEAVES)
+            max_depth = min(max_depth, _SMALL_N_MAX_DEPTH)
+            if p.verbose and (max_leaves, max_depth) != (p.max_leaves, p.max_depth):
+                print(f"[Auto-optimize] Dataset < {_SMALL_N_ROWS} rows: capping to "
+                      f"{max_leaves} leaves / depth {max_depth}")
         return TreeParams(
-            max_leaves=p.max_leaves, max_depth=p.max_depth, reg_lambda=p.reg_lambda,
+            max_leaves=max_leaves, max_depth=max_depth, reg_lambda=p.reg_lambda,
             gamma=p.gamma, min_child_weight=p.min_child_weight,
             min_samples_leaf=p.min_samples_leaf, learning_rate=p.learning_rate,
             kernel_splits=p.kernel_splits, kernel_candidates=p.kernel_candidates,
@@ -358,6 +436,7 @@ class Booster:
         X: np.ndarray,
         y: np.ndarray,
         eval_set: tuple[np.ndarray, np.ndarray] | None = None,
+        sample_weight: np.ndarray | None = None,
     ) -> "Booster":
         if self.p.auto_tune:
             from .auto_tune import tune_params
@@ -391,6 +470,14 @@ class Booster:
         binned = self.binner.transform(X, device=dev)
         Xraw = torch.from_numpy(self.binner.impute(X)).to(dev)
         yt = torch.as_tensor(np.asarray(y, dtype=np.float32), device=dev)
+        # Per-row weights scale the Newton gradients and Hessians, which is all
+        # the split gain, leaf values and leaf models are built from -- so one
+        # multiplication below weights the entire fit.
+        wt = (None if sample_weight is None else
+              torch.as_tensor(np.asarray(sample_weight, dtype=np.float32), device=dev))
+        if wt is not None and wt.shape[0] != yt.shape[0]:
+            raise ValueError(
+                f"sample_weight has {wt.shape[0]} entries for {yt.shape[0]} rows")
         n, F = Xraw.shape
 
         # OPTIMIZATION: Adaptive refinement based on dataset size
@@ -428,7 +515,7 @@ class Booster:
         if p.detect_interactions or use_interaction_aware:
             self.interaction_detector = FeatureInteractionDetector(F, device=dev)
 
-        self.base_score = self.loss.base_score(yt)
+        self.base_score = self.loss.base_score(yt, wt)
         margin = torch.full((n,), self.base_score, device=dev)
 
         if eval_set is not None:
@@ -438,13 +525,15 @@ class Booster:
             best_val, rounds_since_best = float("inf"), 0
 
         scales = self.binner.scales_.to(dev)
-        tp = self._tree_params()
+        tp = self._tree_params(n)
         Xn = Xraw / scales.clamp_min(1e-12) if p.kernel_splits else None
         kernel_ema_mode = p.kernel_splits and p.kernel_importance_weighting == "ema"
         kernel_ema = None
 
         for t in range(p.n_estimators):
             grad, hess = self.loss.grad_hess(margin, yt)
+            if wt is not None:
+                grad, hess = grad * wt, hess * wt
 
             # Scale-invariant min-split-gain: derive this tree's gamma from the
             # current gradient variance (see BoostParams.min_split_gain_rel).
@@ -514,7 +603,7 @@ class Booster:
             # Neural leaf networks: fit per-leaf models to within-leaf residuals
             if p.neural_leaves:
                 tree = fit_leaf_networks(tree, Xraw, yt, margin, self.loss, p, gen,
-                                         leaf_idx=leaf_idx)
+                                         leaf_idx=leaf_idx, weights=wt)
 
             # Update feature importance if adaptive selection is enabled
             if p.adaptive_features and self.adaptive_selector is not None:

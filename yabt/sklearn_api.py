@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 from scipy.special import expit
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 
 from .binning import PermutationTargetEncoder, map_categories
-from .boosting import Booster, BoostParams, LogLoss, MSELoss
+from .boosting import Booster, BoostParams, LogLoss, MSELoss, SeedEnsemble
 from .multiclass import MulticlassBooster, SoftmaxBooster
 from .multitask import MultiTaskBooster
 
@@ -46,6 +48,19 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "Column (feature) subsampling ratio per tree."),
         ("max_bins", "int, default=256",
          "Number of histogram bins used to discretize features."),
+        ("small_data_caps", "bool, default=False",
+         "Cap the tree budget to 16 leaves / depth 4 below 2000 rows, where the\n"
+         "default 31-leaf budget can overfit. Caps only, never inflations. Off by\n"
+         "default: across eight sub-2000-row datasets this is a median +0.36%\n"
+         "metric error with a real regression tail (climate-model +6.6%,\n"
+         "airfoil_self_noise +5.2%) even though it wins big where\n"
+         "it lands (qsar-biodeg -7.7%), so ``auto_tune`` offers it as a candidate\n"
+         "and deploys it only where a validation split says it helps."),
+        ("n_ensemble", "int, default=1",
+         "Fit this many boosters differing only in seed and average them. Pure\n"
+         "variance reduction, so it does nothing unless training is stochastic\n"
+         "(``subsample``/``colsample`` < 1). TabArena-Lite at 4: +22 Elo (1266\n"
+         "-> 1289) for ~3.9x the train time, hence opt-in."),
     ],
     [
         ("refine_steps", "int, default=0",
@@ -286,6 +301,30 @@ _PARAMETERS_DOC = _render_params()
 _MULTITASK_PARAMETERS_DOC = _render_params(_MULTITASK_PARAMS)
 
 
+def _dense(X):
+    """Accept scipy sparse matrices by densifying them.
+
+    ponytail: densifies, so peak memory is O(n*F) whatever the sparsity. A real
+    sparse path would hand the CSR straight to the binner and to
+    grow_numba.build_sparse_layout (which today reconstructs a CSR *from* the
+    dense binned matrix); worth doing when someone actually trains on a matrix
+    too large to densify.
+    """
+    return X.toarray() if hasattr(X, "toarray") else X
+
+
+def _as_weights(sample_weight, n: int) -> np.ndarray | None:
+    """Validate ``sample_weight`` into a float32 vector, or None when absent."""
+    if sample_weight is None:
+        return None
+    w = np.asarray(sample_weight, dtype=np.float32).ravel()
+    if w.shape[0] != n:
+        raise ValueError(f"sample_weight has {w.shape[0]} entries for {n} samples")
+    if (w < 0).any():
+        raise ValueError("sample_weight must be non-negative")
+    return w
+
+
 def _require_single_target(y: np.ndarray) -> np.ndarray:
     """Single-target estimators accept (n,) or a column vector (n, 1); a true
     multi-output (n, T>1) target is redirected to YABTMultiTaskRegressor rather
@@ -329,6 +368,16 @@ class _YABTBase(BaseEstimator):
     def _boost_params(self) -> BoostParams:
         return BoostParams(**{n: getattr(self, n) for n in _PARAM_NAMES})
 
+    def _make_booster(self, factory):
+        """``factory(params) -> booster``, wrapped in a seed ensemble when
+        ``n_ensemble > 1``. Members differ only in seed, so they only differ at
+        all when training is stochastic (subsample/colsample < 1)."""
+        p = self._boost_params()
+        if p.n_ensemble <= 1:
+            return factory(p)
+        return SeedEnsemble([factory(replace(p, seed=p.seed + i, n_ensemble=1))
+                             for i in range(int(p.n_ensemble))])
+
     def _encode(self, X: np.ndarray, Y: np.ndarray | None, fit: bool) -> np.ndarray:
         """Replace categorical columns with leakage-free target encodings.
 
@@ -343,6 +392,7 @@ class _YABTBase(BaseEstimator):
         so trees can split on conjunctions like user x resource that neither
         parent encodes alone.
         """
+        X = _dense(X)
         if not getattr(self, "_cat_idx", None):
             return self._append_svd(np.asarray(X, dtype=np.float32), fit)
         X = np.asarray(X)
@@ -474,7 +524,7 @@ class _YABTBase(BaseEstimator):
             Xp[:, p] = (Xc[:, i].astype(np.float64) + 1.0) * mult + Xc[:, j].astype(np.float64)
         return Xp
 
-    def _auto_eval_split(self, X, y, stratify: bool):
+    def _auto_eval_split(self, X, y, stratify: bool, w=None):
         """Carve a seeded ``validation_fraction`` holdout to drive early
         stopping when ``fit`` is called without an ``eval_set``. Skipped (and
         the full data trained on, as before) when early stopping or the
@@ -489,7 +539,7 @@ class _YABTBase(BaseEstimator):
         if (self.early_stopping_rounds <= 0 or frac <= 0.0
                 or int(n * frac) < 50 or self.auto_tune
                 or self.n_estimators <= self.early_stopping_rounds):
-            return X, y, None
+            return X, y, None, w
         rng = np.random.default_rng(self.seed)
         if stratify:
             parts = []
@@ -502,26 +552,31 @@ class _YABTBase(BaseEstimator):
         else:
             val_idx = rng.permutation(n)[: int(round(n * frac))]
         if len(val_idx) == 0:
-            return X, y, None
+            return X, y, None, w
         mask = np.zeros(n, dtype=bool)
         mask[val_idx] = True
         Xa = np.asarray(X)
-        return Xa[~mask], y[~mask], (Xa[mask], y[mask])
+        return (Xa[~mask], y[~mask], (Xa[mask], y[mask]),
+                None if w is None else w[~mask])
 
-    def fit(self, X, y, eval_set=None, categorical_features: list[int] | None = None):
+    def fit(self, X, y, eval_set=None, categorical_features: list[int] | None = None,
+            sample_weight=None):
         self._cat_idx = list(categorical_features) if categorical_features else []
+        X = _dense(X)
         y = np.asarray(y, dtype=np.float32)
         y = _require_single_target(y)
+        sample_weight = _as_weights(sample_weight, len(y))
         if eval_set is None:
-            X, y, eval_set = self._auto_eval_split(X, y, stratify=False)
+            X, y, eval_set, sample_weight = self._auto_eval_split(
+                X, y, stratify=False, w=sample_weight)
         yt = self._transform_y(y, fit=True)
         Xe = self._encode(X, yt, fit=True)
         ev = None
         if eval_set is not None:
             ev = (self._encode(eval_set[0], None, fit=False),
                   self._transform_y(np.asarray(eval_set[1], dtype=np.float32), fit=False))
-        self.booster_ = Booster(self._boost_params(), self._loss())
-        self.booster_.fit(Xe, yt, eval_set=ev)
+        self.booster_ = self._make_booster(lambda pp: Booster(pp, self._loss()))
+        self.booster_.fit(Xe, yt, eval_set=ev, sample_weight=sample_weight)
         return self
 
     def _margin(self, X) -> np.ndarray:
@@ -534,13 +589,17 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
     boosting by default (see the ``multiclass`` parameter; One-vs-Rest is the
     fallback for opt-in features the softmax loop does not support)."""
 
-    def fit(self, X, y, eval_set=None, categorical_features: list[int] | None = None):
+    def fit(self, X, y, eval_set=None, categorical_features: list[int] | None = None,
+            sample_weight=None):
         self._cat_idx = list(categorical_features) if categorical_features else []
+        X = _dense(X)
         y = np.asarray(y, dtype=np.float32)
         self.classes_ = np.unique(y)
         self.n_classes_ = len(self.classes_)
+        sample_weight = _as_weights(sample_weight, len(y))
         if eval_set is None:
-            X, y, eval_set = self._auto_eval_split(X, y, stratify=True)
+            X, y, eval_set, sample_weight = self._auto_eval_split(
+                X, y, stratify=True, w=sample_weight)
 
         self._is_binary = self.n_classes_ == 2
         if not self._is_binary and self.cat_per_class:
@@ -557,8 +616,8 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
             if eval_set is not None:
                 y_eval = (np.asarray(eval_set[1], dtype=np.float32) == self.classes_[1]).astype(np.float32)
                 ev = (self._encode(eval_set[0], None, fit=False), y_eval)
-            self.booster_ = Booster(self._boost_params(), LogLoss())
-            self.booster_.fit(Xe, yt, eval_set=ev)
+            self.booster_ = self._make_booster(lambda pp: Booster(pp, LogLoss()))
+            self.booster_.fit(Xe, yt, eval_set=ev, sample_weight=sample_weight)
         else:  # multiclass: native softmax by default, OvR as fallback
             ev = None
             if eval_set is not None:
@@ -572,11 +631,10 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
                 or params.refine_steps > 0 or params.refit_every > 0
                 or params.auto_tune or params.stochastic_routing
             )
-            if params.multiclass == "softmax" and softmax_ok:
-                self.booster_ = SoftmaxBooster(params)
-            else:
-                self.booster_ = MulticlassBooster(params)
-            self.booster_.fit(Xe, y, eval_set=ev)
+            cls = (SoftmaxBooster if params.multiclass == "softmax" and softmax_ok
+                   else MulticlassBooster)
+            self.booster_ = self._make_booster(cls)
+            self.booster_.fit(Xe, y, eval_set=ev, sample_weight=sample_weight)
             self._calibration = None
             if self.calibrate_multiclass and eval_set is not None:
                 self._fit_vector_calibration(
@@ -668,6 +726,7 @@ class YABTMultiTaskRegressor(_YABTBase, RegressorMixin):
     """
 
     def fit(self, X, Y, eval_set=None):
+        X = _dense(X)
         Y = np.asarray(Y, dtype=np.float32)
         self._y_1d = Y.ndim == 1
         if self._y_1d:
@@ -689,7 +748,7 @@ class YABTMultiTaskRegressor(_YABTBase, RegressorMixin):
         return self
 
     def predict(self, X) -> np.ndarray:
-        m = self.booster_.predict_margin(np.asarray(X, dtype=np.float32))
+        m = self.booster_.predict_margin(np.asarray(_dense(X), dtype=np.float32))
         out = m * self._y_std + self._y_mean
         return out[:, 0] if self._y_1d else out
 

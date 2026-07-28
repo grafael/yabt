@@ -24,24 +24,63 @@ _NEG_INF = -np.inf
 
 
 @njit(cache=True, fastmath=True)
-def _build_hist(binned, grad, hess, rows, start, end, out):
-    """Accumulate (3, F, B) histogram for rows[start:end] into ``out`` (zeroed)."""
+def _build_hist(binned, grad, hess, rows, start, end, out, sel):
+    """Accumulate (3, F, B) histogram for rows[start:end] into ``out`` (zeroed).
+
+    ``sel`` lists the column-sampled feature indices. Masked-out features are
+    skipped outright -- neither zeroed nor accumulated -- so colsample cuts both
+    the O(node_rows) accumulation and the O(F*B) zero-fill, which at F in the
+    thousands is the larger of the two. Their slices hold stale values, which is
+    safe because every reader is mask-aware (``_best_split`` skips them,
+    ``_hist_sub`` subtracts only sampled ones, and the node G/H sums come off a
+    sampled reference feature). The full-column case keeps its own tight loop:
+    the indirection through ``sel`` is not free in the hot path.
+    """
     F = binned.shape[1]
-    out[:] = 0.0
-    for i in range(start, end):
-        r = rows[i]
-        g = grad[r]
-        h = hess[r]
-        for f in range(F):
-            b = binned[r, f]
-            out[0, f, b] += g
-            out[1, f, b] += h
-            out[2, f, b] += 1.0
+    nsel = sel.shape[0]
+    if nsel == F:
+        out[:] = 0.0
+        for i in range(start, end):
+            r = rows[i]
+            g = grad[r]
+            h = hess[r]
+            for f in range(F):
+                b = binned[r, f]
+                out[0, f, b] += g
+                out[1, f, b] += h
+                out[2, f, b] += 1.0
+    else:
+        for si in range(nsel):
+            f = sel[si]
+            out[0, f, :] = 0.0
+            out[1, f, :] = 0.0
+            out[2, f, :] = 0.0
+        for i in range(start, end):
+            r = rows[i]
+            g = grad[r]
+            h = hess[r]
+            for si in range(nsel):
+                f = sel[si]
+                b = binned[r, f]
+                out[0, f, b] += g
+                out[1, f, b] += h
+                out[2, f, b] += 1.0
+
+
+@njit(cache=True, fastmath=True)
+def _hist_sub(h_out, h_in, h_sub, sel):
+    """``h_out = h_in - h_sub`` on the column-sampled features' slices only.
+    O(F*B) per node, so it honors the mask for the same reason _build_hist does."""
+    for si in range(sel.shape[0]):
+        f = sel[si]
+        for c in range(3):
+            for b in range(h_out.shape[2]):
+                h_out[c, f, b] = h_in[c, f, b] - h_sub[c, f, b]
 
 
 @njit(cache=True, fastmath=True)
 def _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
-                       rows, start, end, out, expl_g, expl_h, expl_c):
+                       rows, start, end, out, expl_g, expl_h, expl_c, sel):
     """Sparse (CSC-of-nonzeros) histogram for rows[start:end] into ``out``.
 
     Each feature has a *default bin* (its most common value, typically the
@@ -54,7 +93,14 @@ def _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
     builder does, so sibling subtraction and split search are unchanged.
     """
     F = out.shape[1]
-    out[:] = 0.0
+    if sel.shape[0] == F:
+        out[:] = 0.0
+    else:  # zero only the column-sampled slices -- see _build_hist
+        for si in range(sel.shape[0]):
+            f = sel[si]
+            out[0, f, :] = 0.0
+            out[1, f, :] = 0.0
+            out[2, f, :] = 0.0
     expl_g[:] = 0.0
     expl_h[:] = 0.0
     expl_c[:] = 0.0
@@ -80,7 +126,8 @@ def _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
     # Default bin gets the node total minus what the explicit entries carried;
     # no explicit entry lands here (those are excluded when the layout is built),
     # so this is a write, not a read-modify of real data.
-    for f in range(F):
+    for si in range(sel.shape[0]):
+        f = sel[si]
         df = default_bin[f]
         out[0, f, df] += G - expl_g[f]
         out[1, f, df] += H - expl_h[f]
@@ -208,6 +255,18 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
     expl_h = np.zeros(F, dtype=np.float32)
     expl_c = np.zeros(F, dtype=np.float32)
 
+    # Column-sampled feature indices; ``rf`` is the reference feature the node
+    # G/H sums are read off (masked-out features are all-zero, so feature 0 is
+    # only valid when it is itself sampled).
+    sel = np.empty(F, dtype=np.int64)
+    nsel = 0
+    for f in range(F):
+        if fmask[f]:
+            sel[nsel] = f
+            nsel += 1
+    sel = sel[:nsel]
+    rf = sel[0] if nsel > 0 else 0
+
     # Active-leaf candidate table (parallel arrays, compacted by index k).
     leaf_node = np.zeros(max_nodes, dtype=np.int64)
     leaf_gain = np.zeros(max_nodes, dtype=np.float32)
@@ -220,14 +279,14 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
     node_depth[0] = 0
     if use_sparse:
         _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
-                           rows, 0, n, hist_store[0], expl_g, expl_h, expl_c)
+                           rows, 0, n, hist_store[0], expl_g, expl_h, expl_c, sel)
     else:
-        _build_hist(binned, grad, hess, rows, 0, n, hist_store[0])
+        _build_hist(binned, grad, hess, rows, 0, n, hist_store[0], sel)
     Gsum = 0.0
     Hsum = 0.0
     for b in range(B):
-        Gsum += hist_store[0, 0, 0, b]
-        Hsum += hist_store[0, 1, 0, b]
+        Gsum += hist_store[0, 0, rf, b]
+        Hsum += hist_store[0, 1, rf, b]
     value[0] = -lr * Gsum / (Hsum + lam)
     n_nodes = 1
 
@@ -281,27 +340,29 @@ def _grow(binned, grad, hess, fmask, imat, ib, use_imat,
         if (mid - s) <= (e - mid):
             if use_sparse:
                 _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
-                                   rows, s, mid, hist_store[nl], expl_g, expl_h, expl_c)
+                                   rows, s, mid, hist_store[nl], expl_g, expl_h,
+                                   expl_c, sel)
             else:
-                _build_hist(binned, grad, hess, rows, s, mid, hist_store[nl])
-            hist_store[nr] = hist_store[nid] - hist_store[nl]
+                _build_hist(binned, grad, hess, rows, s, mid, hist_store[nl], sel)
+            _hist_sub(hist_store[nr], hist_store[nid], hist_store[nl], sel)
         else:
             if use_sparse:
                 _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
-                                   rows, mid, e, hist_store[nr], expl_g, expl_h, expl_c)
+                                   rows, mid, e, hist_store[nr], expl_g, expl_h,
+                                   expl_c, sel)
             else:
-                _build_hist(binned, grad, hess, rows, mid, e, hist_store[nr])
-            hist_store[nl] = hist_store[nid] - hist_store[nr]
+                _build_hist(binned, grad, hess, rows, mid, e, hist_store[nr], sel)
+            _hist_sub(hist_store[nl], hist_store[nid], hist_store[nr], sel)
 
         gl = 0.0
         hl = 0.0
         gr = 0.0
         hr = 0.0
         for bb in range(B):
-            gl += hist_store[nl, 0, 0, bb]
-            hl += hist_store[nl, 1, 0, bb]
-            gr += hist_store[nr, 0, 0, bb]
-            hr += hist_store[nr, 1, 0, bb]
+            gl += hist_store[nl, 0, rf, bb]
+            hl += hist_store[nl, 1, rf, bb]
+            gr += hist_store[nr, 0, rf, bb]
+            hr += hist_store[nr, 1, rf, bb]
         value[nl] = -lr * gl / (hl + lam)
         value[nr] = -lr * gr / (hr + lam)
 
@@ -432,16 +493,9 @@ def grow_tree_numba(
         default_bin = np.zeros(1, dtype=np.int64)
         use_sparse = False
 
-    # Used bin count per feature: bin(x) = #{edges < x} in [0, len(edges)], so a
-    # feature uses at most len(edges)+1 bins; the split search skips the empty
-    # tail. Depends only on the (fixed) binner, so cache it there instead of
-    # walking F edge tensors in Python every round.
-    nbins = getattr(binner, "_nb_nbins", None)
-    if nbins is None or nbins.shape[0] != F:
-        nbins = np.fromiter(
-            (min(len(e) + 1, MAX_BINS) for e in binner.edges_), dtype=np.int64, count=F
-        )
-        binner._nb_nbins = nbins
+    # Used bin count per feature (real bins + any reserved NaN bin); the split
+    # search skips the always-empty tail. Cached on the (fixed) binner.
+    nbins = binner.used_bins()
 
     feat, thr_bin, left, right, value, depth = _grow(
         bn, gn, hn, fmask, imat, float(interaction_boost), use_imat,

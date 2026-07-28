@@ -98,6 +98,29 @@ def test_feature_mask_respected():
     assert used <= {1, 3, 5}
 
 
+@pytest.mark.parametrize("threads", [1, 4])
+def test_matches_numba_under_feature_mask(threads):
+    # Column subsampling skips the histogram accumulation for masked-out
+    # features, and the node G/H sums move off feature 0 onto the lowest
+    # *sampled* feature. Both growers must make the same move, and feature 0
+    # being masked out is the case that catches getting it wrong.
+    X, y = make_regression(n_samples=3000, n_features=16, n_informative=12,
+                           noise=1.0, random_state=0)
+    X = X.astype(np.float32); y = y.astype(np.float32)
+    binner, binned = _binned(X)
+    grad = torch.from_numpy((y - y.mean()).astype(np.float32))
+    hess = torch.ones(len(y))
+    tp = TreeParams(max_leaves=31)
+    mask = torch.zeros(16, dtype=torch.bool)
+    mask[[2, 3, 7, 11, 14]] = True  # feature 0 deliberately excluded
+    ta = grow_tree_numba(binned, grad, hess, binner, tp, feature_mask=mask)
+    tb = grow_tree_c(binned, grad, hess, binner, tp, feature_mask=mask,
+                     n_threads=threads)
+    _assert_identical(ta, tb)
+    assert set(int(f) for f in ta.feature.tolist() if f >= 0) <= {2, 3, 7, 11, 14}
+    assert float(ta.value.abs().max()) > 0.0  # G/H sums came off a real feature
+
+
 def test_gate_produces_equivalent_model():
     # End-to-end: c_grower on vs off (Numba) -> near-identical predictions.
     X, y = make_regression(n_samples=4000, n_features=20, n_informative=14,
