@@ -140,3 +140,42 @@ def test_auto_tune_offers_relative_gamma_candidate():
     over = dict(_candidates(10000))
     assert "min_split_gain_rel" in over["regularized-splits"]
     assert "gamma" not in over["regularized-splits"]
+
+
+def _multiclass(n, seed=0):
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, 6)).astype(np.float32)
+    score = np.stack([1.5 * X[:, 0], X[:, 1] - 0.5 * X[:, 2], 0.8 * X[:, 3]], axis=1)
+    y = (score + rng.gumbel(size=(n, 3))).argmax(axis=1).astype(np.float32)
+    return X, y
+
+
+def test_auto_tune_multiclass_keeps_softmax():
+    """auto_tune must not silently demote multiclass to the OvR fallback.
+
+    Regression test: auto_tune used to be listed as softmax-incompatible, so
+    enabling it swapped in per-class OvR boosters, and the fallback cost more
+    accuracy than the tuning gained.
+    """
+    X, y = _multiclass(3000)
+    clf = YABTClassifier(n_estimators=60, auto_tune=True, refine_steps=0, seed=0).fit(X, y)
+
+    from yabt.multiclass import SoftmaxBooster
+    assert isinstance(clf.booster_, SoftmaxBooster)
+    assert not hasattr(clf.booster_, "boosters_")  # OvR marker
+
+    rep = clf.booster_.tuning_report_
+    assert rep is not None and rep["selected"] in [r["name"] for r in rep["results"]]
+    assert clf.booster_.params.auto_tune is False  # no recursive tuning state left
+    assert clf.predict_proba(X).shape == (len(X), 3)
+
+
+def test_auto_tune_multiclass_not_worse_than_default():
+    X, y = _multiclass(4000, seed=1)
+    Xtr, ytr, Xte, yte = X[:3000], y[:3000], X[3000:], y[3000:]
+    kw = dict(n_estimators=60, refine_steps=0, seed=0)
+    base = YABTClassifier(**kw).fit(Xtr, ytr)
+    tuned = YABTClassifier(auto_tune=True, **kw).fit(Xtr, ytr)
+    acc_base = float((base.predict(Xte) == yte).mean())
+    acc_tuned = float((tuned.predict(Xte) == yte).mean())
+    assert acc_tuned >= acc_base - 0.02, f"base {acc_base:.3f} vs tuned {acc_tuned:.3f}"

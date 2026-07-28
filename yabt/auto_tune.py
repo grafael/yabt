@@ -69,12 +69,31 @@ def _val_loss(params, loss, over, search_estimators, Xtr, ytr, Xv, yv_t) -> floa
     return float(loss.loss(margin, yv_t))
 
 
+def _val_loss_softmax(params, loss, over, search_estimators, Xtr, ytr, Xv, yv_t) -> float:
+    """Candidate score for the native softmax loop: held-out multiclass NLL.
+
+    The default ``_val_loss`` fits a single binary ``Booster``, which cannot rank
+    candidates for a K-class softmax model, so the softmax path scores candidates
+    with the objective it actually deploys. ``loss`` is unused here (the softmax
+    objective is fixed) but kept for a uniform candidate-scorer signature.
+    """
+    from .multiclass import SoftmaxBooster  # local import: multiclass imports this module
+
+    p = replace(params, auto_tune=False, n_estimators=search_estimators,
+                early_stopping_rounds=0, verbose=False, **over)
+    b = SoftmaxBooster(p).fit(Xtr, ytr)
+    M = torch.as_tensor(b.predict_margin(Xv), dtype=torch.float32)
+    idx = torch.as_tensor(np.searchsorted(b.classes_, yv_t.numpy()), dtype=torch.long)
+    return float(torch.nn.functional.cross_entropy(M, idx))
+
+
 def tune_params(
     params,
     loss,
     X: np.ndarray,
     y: np.ndarray,
     eval_set: tuple[np.ndarray, np.ndarray] | None = None,
+    val_loss_fn=None,
 ) -> tuple[object, dict | None]:
     """Returns (tuned_params, report). Report is None when tuning was skipped.
 
@@ -118,10 +137,11 @@ def tune_params(
         scoring = "cv"
 
     search_estimators = min(params.n_estimators, SEARCH_MAX_ESTIMATORS)
+    score = val_loss_fn or _val_loss
     results = []
     for name, over in _candidates(n):
         vl = float(np.mean([
-            _val_loss(params, loss, over, search_estimators, ftr_X, ftr_y, fXv, fyv)
+            score(params, loss, over, search_estimators, ftr_X, ftr_y, fXv, fyv)
             for ftr_X, ftr_y, fXv, fyv in folds]))
         results.append({"name": name, "val_loss": vl, "overrides": over})
 

@@ -208,8 +208,9 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "stopping on multiclass log loss); \"ovr\" trains one independent binary\n"
          "booster per class. The classifier falls back to OvR when an opt-in\n"
          "feature the softmax loop does not support is enabled (kernel splits,\n"
-         "GOSS, adaptive/product features, refinement/refit, auto-tune,\n"
-         "stochastic routing)."),
+         "GOSS, adaptive/product features, refinement/refit, stochastic\n"
+         "routing). Note the fallback costs multiclass accuracy, so prefer\n"
+         "leaving those off unless you need them."),
         ("early_stopping_rounds", "int, default=50",
          "Stop if the eval metric does not improve for this many rounds (0\n"
          "disables). The metric is computed on the ``eval_set`` passed to\n"
@@ -629,7 +630,7 @@ class YABTClassifier(_YABTBase, ClassifierMixin):
                 params.kernel_splits or params.goss_enabled
                 or params.adaptive_features or params.product_features
                 or params.refine_steps > 0 or params.refit_every > 0
-                or params.auto_tune or params.stochastic_routing
+                or params.stochastic_routing
             )
             cls = (SoftmaxBooster if params.multiclass == "softmax" and softmax_ok
                    else MulticlassBooster)

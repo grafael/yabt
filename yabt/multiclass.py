@@ -88,10 +88,11 @@ class SoftmaxBooster:
 
     Supports the default-path features (growers, subsample/colsample,
     interaction steering, ``min_split_gain_rel``, neural leaves, early
-    stopping). Opt-ins tied to per-booster state (kernel splits, GOSS,
-    adaptive features, product features, refinement/refit, auto-tune,
-    stochastic routing) are not wired up here — ``YABTClassifier`` falls back
-    to OvR when any of them is enabled.
+    stopping) and ``auto_tune``, whose candidates are scored with the softmax
+    objective. Opt-ins tied to per-booster state (kernel splits, GOSS,
+    adaptive features, product features, refinement/refit, stochastic routing)
+    are not wired up here — ``YABTClassifier`` falls back to OvR when any of
+    them is enabled.
     """
 
     def __init__(self, params: BoostParams):
@@ -101,6 +102,7 @@ class SoftmaxBooster:
         self.base_scores_: np.ndarray | None = None
         self.binner: Binner | None = None
         self.best_iter: int | None = None
+        self.tuning_report_: dict | None = None
 
     def fit(
         self,
@@ -109,6 +111,17 @@ class SoftmaxBooster:
         eval_set: tuple[np.ndarray, np.ndarray] | None = None,
         sample_weight: np.ndarray | None = None,
     ) -> "SoftmaxBooster":
+        if self.params.auto_tune:
+            # Tune here rather than in Booster.fit: this loop only borrows a
+            # Booster as a grower engine and never calls its fit, so the hook
+            # there never fires. Candidates are scored with the softmax
+            # objective this loop deploys, not a binary stand-in.
+            from .auto_tune import tune_params, _val_loss_softmax
+            self.params, self.tuning_report_ = tune_params(
+                self.params, LogLoss(),
+                np.asarray(X, dtype=np.float32), np.asarray(y, dtype=np.float32),
+                eval_set, val_loss_fn=_val_loss_softmax,
+            )
         p = self.params
         dev = self.device_ = p.resolve_device()
         gen = torch.Generator(device="cpu").manual_seed(p.seed)
