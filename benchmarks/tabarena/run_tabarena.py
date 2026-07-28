@@ -11,11 +11,16 @@ Re-runs reuse cached fold results, so a crashed run resumes where it left off.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
+
+# Must be set before YABTModel is imported into the workers (see _cpu_only).
+if "--cpu" in sys.argv:
+    os.environ["YABT_TABARENA_CPU"] = "1"
 
 from yabt_model import YABTModel  # noqa: E402
 
@@ -29,9 +34,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--full", action="store_true", help="run all TabArena-Lite tasks")
     parser.add_argument("--n-configs", type=int, default=0, help="extra random HPO configs")
+    parser.add_argument("--cpu", action="store_true",
+                        help="train on CPU even on a GPU box (comparable train times)")
     args = parser.parse_args()
 
     run_name = "yabt_tabarena_full" if args.full else "yabt_tabarena_smoke"
+    if args.cpu:
+        run_name += "_cpu"
     results_dir = str(HERE / "experiments" / run_name)
     eval_dir = HERE / "eval" / run_name
 
@@ -48,6 +57,11 @@ def main() -> None:
         build_kwargs=build_kwargs,
         new_result_prefix="[New] ",
         debug_mode=True,  # in-process backend (no Ray)
+        # Record a task that blows AutoGluon's per-model time budget as a
+        # failure (TabArena imputes it on the leaderboard, which is how the
+        # protocol scores methods that cannot finish) instead of aborting the
+        # whole sweep. On CPU, QSAR-TID-11 (1025 features) exceeds the 1h cap.
+        raise_on_failure=False,
     )
 
     leaderboard = context.compare(output_dir=eval_dir)

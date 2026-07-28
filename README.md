@@ -1,8 +1,9 @@
 # YABT: Yet Another Boosting Tree
 
-YABT is a GPU-accelerated gradient boosting library. Like XGBoost or
-LightGBM, it trains a sequence of small decision trees where each tree
-corrects the mistakes of the ones before it. The difference is what YABT does
+YABT is a gradient boosting library with multi-core CPU and CUDA backends
+(`device="auto"` picks one). Like XGBoost or LightGBM, it trains a sequence of
+small decision trees where each tree corrects the mistakes of the ones before
+it. The difference is what YABT does
 to each tree once it is built: it replaces each leaf's constant output with a
 small learned model, and can optionally fine-tune the split points with
 gradient descent (the same method used to train neural networks) so they land
@@ -13,16 +14,18 @@ works as a drop-in replacement for XGBoost/LightGBM-style estimators.
 
 > **Experimental.** YABT is a research project, not a production library.
 > On [TabArena](#benchmark-results-tabarena) its default config is the
-> second-strongest GBDT default after CatBoost's at competitive train time
-> (on GPU), but it has none of a mature library's hardening (sparse inputs,
-> distributed training, model serialization guarantees, ecosystem tooling).
+> second-strongest GBDT default after CatBoost's, at the fastest train time in
+> that group (CPU-to-CPU), but it has none of a mature library's hardening
+> (sparse inputs, distributed training, model serialization guarantees,
+> ecosystem tooling).
 
 ## How it works
 
 YABT is gradient boosting: it builds a sequence of trees, each trained to
 predict the error (the gradient of the loss) left over by all the trees before
-it, and sums their contributions. Each tree is grown fast on the GPU with the
-standard histogram method — continuous features are binned into small integer
+it, and sums their contributions. Each tree is grown with the standard
+histogram method — on an OpenMP C grower on CPU or a batched CUDA grower on
+GPU — where continuous features are binned into small integer
 buckets (0–255), bucketed error sums give a gain score for every candidate
 split, and the highest-gain split wins until the leaf or depth budget is hit.
 The twist is what sits in each leaf: instead of a single constant, YABT can use
@@ -133,30 +136,54 @@ other methods.
 YABT is benchmarked on [TabArena](https://tabarena.ai) (TabArena-Lite: 51
 curated datasets, the official protocol — fixed splits, 8-fold bagging, ROC
 AUC / log loss / RMSE), against the public leaderboard of 70+ methods spanning
-GBDTs, neural nets, AutoML systems, and tabular foundation models.
+GBDTs, neural nets, AutoML systems, and tabular foundation models. The numbers
+below are over the 50 datasets YABT completes on CPU within the protocol's
+1-hour per-model budget; see [the caveat](#cpu-vs-gpu-and-the-wide-data-caveat)
+for the one it does not.
 
-**YABT's default configuration scores Elo 1266 (rank 36 of 78)** — the
+**YABT's default configuration scores Elo 1267 (rank 37 of 78)** — the
 strongest GBDT *default* on the leaderboard after CatBoost's, ahead of the
 XGBoost / LightGBM / EBM defaults by a wide margin and ahead of several
-*tuned* (200-config HPO) entries:
+*tuned* (200-config HPO) entries. YABT is trained **on CPU** here so the train
+times are comparable with every other row (`run_tabarena.py --full --cpu`):
 
 | # | Model | Elo | Median train s/1K rows |
 |--:|---|--:|--:|
-| 22 | CatBoost (default) | 1340 | 6.7 (CPU) |
-| 26 | ChimeraBoost (tuned + ensembled) | 1326 | 2047.7 (CPU) |
-| **36** | **YABT (default)** | **1266** | **3.3 (GPU)** |
-| 37 | EBM (tuned + ensembled) | 1254 | 4206.6 (CPU) |
-| 50 | XGBoost (default) | 1183 | 2.1 (CPU) |
-| 55 | LightGBM (default) | 1154 | 2.2 (CPU) |
+| 22 | CatBoost (default) | 1343 | 6.4 (CPU) |
+| 27 | ChimeraBoost (tuned + ensembled) | 1328 | 1978.9 (CPU) |
+| **37** | **YABT (default)** | **1267** | **1.7 (CPU)** |
+| 38 | EBM (tuned + ensembled) | 1262 | 2892.5 (CPU) |
+| 50 | XGBoost (default) | 1184 | 2.0 (CPU) |
+| 55 | LightGBM (default) | 1150 | 2.1 (CPU) |
 
 (The top of the table is tabular foundation models and 4-hour AutoML systems —
-TabFM at 1793, TabPFN variants, AutoGluon — a different compute class than any
-single default-config model.)
+TabFM, TabPFN variants, AutoGluon — a different compute class than any single
+default-config model.)
 
-Against CatBoost's default head-to-head, YABT wins 18 of 51 datasets with a
-median metric-error gap of +0.6% (binary +0.7%, regression +0.4%, multiclass
-+4.7%); the remaining Elo gap is concentrated in a small tail of
+Against CatBoost's default head-to-head, YABT wins 17 of 50 datasets with a
+median metric-error gap of +0.9% (regression +0.4%, binary +1.4%, multiclass
++4.5%); the remaining Elo gap is concentrated in a small tail of
 small-or-noisy datasets where CatBoost's ordered boosting is strong.
+
+### CPU vs GPU, and the wide-data caveat
+
+Accuracy is device-neutral: over the 50 datasets both devices completed, the
+median CPU/GPU metric-error ratio is 0.999 and CPU is better on 28 of 50
+(Elo 1267 on CPU vs 1266 on GPU, same rank). Train time favors CPU at these
+dataset sizes — median 1.7 s/1K rows on CPU against 3.3 on GPU, because
+TabArena's datasets are small enough that GPU kernel-launch latency dominates
+(anneal: 183 s on GPU, 22 s on CPU).
+
+The exception is **wide** data, where the CPU grower's per-tree cost scales
+with the feature count and the GPU pulls far ahead: hiva_agnostic (1617
+features) is 13x slower on CPU, Bioresponse (1776) 5.8x, and **QSAR-TID-11
+(1025 features) does not finish within TabArena's 1-hour per-model budget on
+CPU at all** (94 s on GPU). That task is therefore excluded from the CPU
+leaderboard above — for every method, so the 50-dataset comparison is
+internally fair, but it is not the same task set as the published 51-dataset
+board. On GPU, YABT ranks 32/78 on that task, slightly better than its overall
+rank, so dropping it flatters YABT marginally. Use `device="cuda"` for wide
+feature matrices.
 
 The TabArena default config (defined in `benchmarks/tabarena/yabt_model.py`)
 is `learning_rate=0.05`, `subsample=colsample=0.9`, a 10k-tree cap with
@@ -173,8 +200,9 @@ The harness needs a TabArena environment (see `benchmarks/README.md` for
 setup). Then, from `benchmarks/tabarena/`:
 
 ```bash
-python run_tabarena.py           # smoke run: 3 small datasets
-python run_tabarena.py --full    # full TabArena-Lite (~40 min on an RTX 4090)
+python run_tabarena.py                 # smoke run: 3 small datasets
+python run_tabarena.py --full          # full TabArena-Lite, GPU if one is present
+python run_tabarena.py --full --cpu    # CPU-only: the numbers reported above
 ```
 
 Results cache under `experiments/` (re-runs resume where they left off); the

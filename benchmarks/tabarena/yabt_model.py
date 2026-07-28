@@ -13,6 +13,7 @@ in place — YABT's binner median-imputes them.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,18 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from tabarena.utils.config_utils import ConfigGenerator
+
+
+def _cpu_only() -> bool:
+    """``YABT_TABARENA_CPU=1`` forces CPU training even on a GPU box.
+
+    The leaderboard's train-time column is CPU wall clock for every other
+    method, so a GPU-trained YABT row is not comparable on time; this is how
+    ``run_tabarena.py --cpu`` produces an apples-to-apples measurement. An env
+    var (not a constructor arg) because TabArena pickles the model class to its
+    workers, and the flag has to survive that trip.
+    """
+    return os.environ.get("YABT_TABARENA_CPU", "") not in ("", "0")
 
 
 class YABTModel(AbstractModel):
@@ -77,7 +90,8 @@ class YABTModel(AbstractModel):
         y = np.asarray(y)
 
         params = self._get_model_params()
-        params.setdefault("device", "cuda" if num_gpus and num_gpus > 0 else "cpu")
+        use_gpu = bool(num_gpus) and num_gpus > 0 and not _cpu_only()
+        params.setdefault("device", "cuda" if use_gpu else "cpu")
         params.setdefault("c_grower_threads", int(num_cpus))
 
         eval_set = None
@@ -127,6 +141,8 @@ class YABTModel(AbstractModel):
 
     def _get_default_resources(self) -> tuple[int, int]:
         num_cpus = ResourceManager.get_cpu_count(only_physical_cores=True)
+        if _cpu_only():
+            return num_cpus, 0
         try:
             import torch
 

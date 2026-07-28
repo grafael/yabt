@@ -41,6 +41,7 @@ From `benchmarks/tabarena/`, with the TabArena venv's python:
 ```bash
 python run_tabarena.py           # smoke run: 3 small datasets
 python run_tabarena.py --full    # full TabArena-Lite (51 datasets, ~40 min on a 4090)
+python run_tabarena.py --full --cpu   # CPU-only (the reported numbers; ~2 h on 8 cores)
 python run_tabarena.py --full --n-configs 200   # adds the tuned-config HPO protocol
 ```
 
@@ -50,5 +51,11 @@ baselines into `~/.cache/openml` / `~/.cache/tabarena`; both are persistent.
 ## Results
 
 See the "Benchmark results" section of the top-level README for the current
-leaderboard standing, and `eval/yabt_tabarena_full/` after a run for the full
-leaderboard CSV, Pareto fronts, and win-rate matrix.
+leaderboard standing, and `eval/<run name>/` after a run for the full
+leaderboard CSV, Pareto fronts, and win-rate matrix (`--cpu` writes to
+`*_cpu/`, so GPU and CPU runs do not overwrite each other).
+
+`--cpu` records a task that blows AutoGluon's 1-hour per-model budget as a
+failure and continues, rather than aborting the sweep: on CPU, QSAR-TID-11
+(1025 features) does not finish, and the leaderboard is then computed over the
+remaining 50 datasets for every method.
