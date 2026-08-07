@@ -103,7 +103,11 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "Gradient-based One-Side Sampling: keep large-gradient rows and\n"
          "subsample the rest."),
         ("goss_ratio", "float, default=0.9",
-         "Fraction of large-gradient rows retained when GOSS is enabled."),
+         "Total fraction of rows kept when GOSS is enabled: the top\n"
+         "``1 - goss_ratio`` by |gradient| is kept deterministically and the\n"
+         "rest of the budget is sampled uniformly (0.9 = top 10% plus a random\n"
+         "80%). At 0.5 and below the random part vanishes and only the\n"
+         "top-|gradient| rows are kept."),
     ],
     [
         ("detect_interactions", "bool, default=False",
@@ -169,8 +173,10 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
     ],
     [
         ("auto_tune", "bool, default=False",
-         "Search curated hyperparameter candidates on a validation split before\n"
-         "the final fit (skipped for datasets with < 600 rows)."),
+         "Search curated hyperparameter candidates before the final fit: scored\n"
+         "on a single holdout at 600+ rows, by 3-fold CV between 150 and 600\n"
+         "rows, and skipped entirely below 150 rows or fewer than 20 trees. An\n"
+         "``eval_set`` passed to ``fit`` is scored on directly at any size."),
     ],
     [
         ("stochastic_routing", "bool, default=False",

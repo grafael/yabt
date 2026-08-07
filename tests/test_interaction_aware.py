@@ -109,3 +109,15 @@ def test_regressor_smoke_and_explicit_opt_out():
     off = YABTRegressor(n_estimators=5, interaction_aware=False, refine_steps=0,
                         seed=0).fit(X, y)
     assert off.booster_.interaction_detector is None
+
+
+def test_top_interactions_available_on_every_multiclass_path():
+    """The README points users at ``booster_.top_interactions(k)``; it has to
+    work for multiclass too, not just the single-Booster paths."""
+    X, y = _xor_in_noise(4000, 8)
+    y = y + (X[:, 2] > 1).astype(y.dtype)  # 3 classes
+    for multiclass in ("softmax", "ovr"):
+        clf = YABTClassifier(n_estimators=20, max_leaves=8, multiclass=multiclass,
+                             early_stopping_rounds=0, seed=0).fit(X, y)
+        top = clf.booster_.top_interactions(1)
+        assert top and {top[0][0], top[0][1]} == {0, 1}, f"{multiclass}: {top}"
