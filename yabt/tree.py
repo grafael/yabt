@@ -499,7 +499,6 @@ def grow_tree_levelwise(
             pos_of_row = node_to_pos[node_of_row]   # (n,), -1 for inactive rows
             row_active = pos_of_row >= 0
             pr = pos_of_row.clamp(min=0)            # inactive rows masked, not gathered
-        bb, gg, hh = binned, grad, hess
 
         cum = hist.cumsum(-1)  # fused over the (grad, hess, count) channels
         GL, HL, CL = cum[0], cum[1], cum[2]
@@ -563,7 +562,7 @@ def grow_tree_levelwise(
         # rows whose node didn't split keep their current slot.
         cl_t = torch.tensor(child_left, dtype=torch.long, device=dev)
         cr_t = torch.tensor(child_right, dtype=torch.long, device=dev)
-        xb = bb.gather(1, f[pr, None]).squeeze(1).long()
+        xb = binned.gather(1, f[pr, None]).squeeze(1).long()
         go_left = xb <= b[pr]
         newn = torch.where(go_left, cl_t[pr], cr_t[pr])
         moved = row_active & do_split[pr]
@@ -592,8 +591,8 @@ def grow_tree_levelwise(
             participates = row_active & (pair_row >= 0)
             sil_row = sil_pair[pair_row.clamp(min=0)]
             is_small = (participates & (go_left == sil_row)).to(grad.dtype)  # (n,) 0/1
-            hist_small = scatter_hist(pair_row.clamp(min=0), bb,
-                                      gg * is_small, hh * is_small, P,
+            hist_small = scatter_hist(pair_row.clamp(min=0), binned,
+                                      grad * is_small, hess * is_small, P,
                                       cweight=is_small)
             hist_other = hist_parent - hist_small
             sil = sil_pair.view(1, P, 1, 1)

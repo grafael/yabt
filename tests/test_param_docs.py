@@ -15,25 +15,16 @@ from yabt.sklearn_api import (
     YABTClassifier,
     YABTMultiTaskRegressor,
     YABTRegressor,
+    _EXTRA_PARAMS,
     _MULTITASK_PARAMS,
     _PARAM_GROUPS,
 )
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 
-# The cat_* params live on the estimator (not BoostParams); their defaults are
-# set in _YABTBase.__init__.
-ALL_PARAMS = {f.name for f in BoostParams.__dataclass_fields__.values()} | {
-    "cat_smoothing", "cat_per_class", "cat_count_features", "cat_combinations",
-    "cat_combinations_min_card", "calibrate_multiclass", "svd_features", "svd_min_features",
-    "validation_fraction",
-}
-EXTRA_DEFAULTS = {
-    "cat_smoothing": 10.0, "cat_per_class": False, "cat_count_features": False,
-    "cat_combinations": 0, "cat_combinations_min_card": 8,
-    "calibrate_multiclass": False, "svd_features": 0, "svd_min_features": 32,
-    "validation_fraction": 0.15,
-}
+# The cat_*/svd_*/validation_fraction params live on the estimator, not on
+# BoostParams (see sklearn_api._EXTRA_PARAMS).
+ALL_PARAMS = {f.name for f in BoostParams.__dataclass_fields__.values()} | set(_EXTRA_PARAMS)
 
 
 def _flat_groups():
@@ -54,7 +45,7 @@ def test_param_groups_cover_boostparams_exactly():
 
 def test_param_group_defaults_match_actual_defaults():
     actual = {f.name: f.default for f in BoostParams.__dataclass_fields__.values()}
-    actual.update(EXTRA_DEFAULTS)
+    actual.update(_EXTRA_PARAMS)
     for name, sig, _ in _flat_groups():
         documented = ast.literal_eval(_default_token(sig))
         assert documented == actual[name], (

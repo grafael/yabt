@@ -223,7 +223,7 @@ class BoostParams:
     # them. Pure variance reduction, so it only does something when training is
     # stochastic (subsample/colsample < 1) -- with both at 1.0 the members are
     # identical and this just multiplies the cost. Measured on TabArena-Lite:
-    # n_ensemble=4 is +22 Elo (1266 -> 1289, rank 36 -> 32) at ~3.9x train time,
+    # n_ensemble=4 is +22 Elo (1266 -> 1289, rank 37 -> 33) at ~3.9x train time,
     # so it is opt-in rather than a default.
     n_ensemble: int = 1
     # Training control. Early stopping is on by default: the sklearn estimators
@@ -247,7 +247,7 @@ class SeedEnsemble:
     Pure variance reduction: each member sees different row/column subsamples,
     and averaging their margins (or, for multiclass, their probabilities) cancels
     the part of each fit that was seed noise rather than signal. Measured on
-    TabArena-Lite at n_ensemble=4: Elo 1266 -> 1289 (rank 36 -> 32) for ~3.9x the
+    TabArena-Lite at n_ensemble=4: Elo 1266 -> 1289 (rank 37 -> 33) for ~3.9x the
     train time.
 
     Attribute lookups fall through to the first member, so ``booster_.binner``,
@@ -316,7 +316,7 @@ class Booster:
             self._c_grower_avail = ok
         return ok
 
-    def _get_sparse_layout(self, binned, n, F):
+    def _get_sparse_layout(self, binned):
         """Lazily build and cache the sparse histogram layout; gate "auto" on the
         achieved density. Returns the layout or None (use the dense builder)."""
         if self._sparse_decided:
@@ -365,7 +365,7 @@ class Booster:
         reused across every tree grown on the same binned matrix."""
         p = self.p
         dev = binned.device.type
-        n, F = binned.shape
+        F = binned.shape[1]
         gb = binned[rows] if rows is not None else binned
 
         # "auto" turns level-wise on for cuda (A/B: ~1.8x faster, accuracy
@@ -392,7 +392,7 @@ class Booster:
             # is keyed by global row id). "auto" keeps it only if dense enough.
             sl = None
             if p.sparse_hist is not False and rows is None:
-                sl = self._get_sparse_layout(binned, n, F)
+                sl = self._get_sparse_layout(binned)
             # Prefer the OpenMP C grower (multi-core) over single-threaded
             # Numba when available; "auto" gates on problem size so tiny trees
             # don't pay thread spin-up. Same kernel/output, falls back to Numba.
@@ -412,14 +412,12 @@ class Booster:
                             self._binned_fmajor = np.ascontiguousarray(
                                 binned.detach().cpu().numpy().T, dtype=np.uint8)
                         bfm = self._binned_fmajor
-                    grown = grow_tree_c(gb, g, h, self.binner, tp_t, fmask,
-                                        interaction_matrix=imat,
-                                        interaction_boost=p.interaction_boost,
-                                        sparse_layout=sl,
-                                        n_threads=p.c_grower_threads,
-                                        binned_fmajor=bfm)
-                    if grown is not None:
-                        return grown
+                    return grow_tree_c(gb, g, h, self.binner, tp_t, fmask,
+                                       interaction_matrix=imat,
+                                       interaction_boost=p.interaction_boost,
+                                       sparse_layout=sl,
+                                       n_threads=p.c_grower_threads,
+                                       binned_fmajor=bfm)
                 except Exception:
                     self._c_grower_failed = True  # fall back for the rest of fit
             return grow_tree_numba(gb, g, h, self.binner, tp_t, fmask,
@@ -480,8 +478,6 @@ class Booster:
                 f"sample_weight has {wt.shape[0]} entries for {yt.shape[0]} rows")
         n, F = Xraw.shape
 
-        # OPTIMIZATION: Adaptive refinement based on dataset size
-        # Smart balance between speed and accuracy
         # Cap (never inflate) the user's refine_steps for smaller datasets, where
         # extra refinement tends to overfit. The caps are upper bounds only, so
         # refine_steps=0 always disables refinement (the old max(...) floors made

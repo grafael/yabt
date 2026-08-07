@@ -8,7 +8,7 @@ Preprocessing contract: AutoGluon hands us int/float/category columns
 (``valid_raw_types``). We convert category columns to integer codes and pass
 their column indices to YABT's ``categorical_features``, which target-encodes
 them leakage-free (PermutationTargetEncoder); NaNs in numeric columns are left
-in place — YABT's binner median-imputes them.
+in place — YABT's binner gives them their own bin.
 """
 
 from __future__ import annotations
