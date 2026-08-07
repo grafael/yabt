@@ -55,6 +55,11 @@ class MulticlassBooster:
             self.boosters_.append(booster)
         return self
 
+    def top_interactions(self, k: int = 5) -> list[tuple[int, int, float]]:
+        """Top-k detected feature interaction pairs, from the first class's
+        booster (each OvR booster learns its own; they see the same features)."""
+        return self.boosters_[0].top_interactions(k) if self.boosters_ else []
+
     def predict_margin(self, X: np.ndarray) -> np.ndarray:
         """Per-class raw scores, (n_samples, n_classes)."""
         return np.stack([b.predict_margin(X) for b in self.boosters_], axis=1)
@@ -97,6 +102,7 @@ class SoftmaxBooster:
         self.base_scores_: np.ndarray | None = None
         self.binner: Binner | None = None
         self.best_iter: int | None = None
+        self.interaction_detector = None
 
     def fit(
         self,
@@ -144,6 +150,9 @@ class SoftmaxBooster:
         if p.detect_interactions or use_interaction_aware:
             from .adaptive_features import FeatureInteractionDetector
             engine.interaction_detector = FeatureInteractionDetector(F, device=dev)
+        # The detector is shared across the K per-class trees; keep it so
+        # ``top_interactions`` works here exactly as it does on ``Booster``.
+        self.interaction_detector = engine.interaction_detector
 
         tp = engine._tree_params(n)
         self.trees_ = [[] for _ in range(K)]
@@ -219,6 +228,13 @@ class SoftmaxBooster:
             elif p.verbose and t % 50 == 0:
                 print(f"[{t}] train={float(torch.nn.functional.cross_entropy(M, yi)):.5f}")
         return self
+
+    def top_interactions(self, k: int = 5) -> list[tuple[int, int, float]]:
+        """Top-k detected feature interaction pairs (requires
+        ``detect_interactions=True`` or active interaction steering)."""
+        if self.interaction_detector is None:
+            return []
+        return self.interaction_detector.get_top_interactions(k)
 
     def predict_margin(self, X: np.ndarray) -> np.ndarray:
         """Per-class raw scores, (n_samples, n_classes)."""

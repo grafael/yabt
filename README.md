@@ -129,8 +129,10 @@ Categorical columns are handled natively — pass their indices as
 (see the `cat_*` parameters for count features, pair combinations, and
 per-class multiclass encodings).
 
-Per-row weights are supported on every estimator
-(`fit(X, y, sample_weight=w)`): they scale the Newton gradients and Hessians,
+Per-row weights are supported on the single-target estimators —
+`YABTClassifier` and `YABTRegressor` — as `fit(X, y, sample_weight=w)`
+(`YABTMultiTaskRegressor.fit` does not take them): they scale the Newton
+gradients and Hessians,
 so they weight the split gains, the leaf values and the per-leaf models alike.
 Note that the binner's quantile edges, `min_samples_leaf` and
 `leaf_net_min_samples` still count rows, so a zero weight silences a row's
@@ -280,9 +282,13 @@ is experimental and off by default: in our A/B tests neither variant beat the
 uniform distance, because gain-adaptive distances tend to select kernel
 splits whose in-sample advantage does not generalize.
 
-On a noisy XOR problem with depth-1 trees, axis-aligned boosting stays at
-chance (about 50% accuracy, since the target is not additive in the features)
-while kernel splits reach about 95%.
+On a noisy XOR problem with depth-1 trees **and constant leaves**
+(`neural_leaves=False`), axis-aligned boosting stays at chance (about 50%
+accuracy, since the target is not additive in the features) while kernel splits
+reach about 95%. With the default linear leaves the axis baseline is no longer
+stuck at chance — a stump plus a linear leaf already spans XOR (0.87 vs 0.87 for
+kernel splits on a 5%-noise XOR, 6 features, 100 stumps) — so the gap this
+feature closes is the one constant-leaf trees have.
 
 ## Neural leaf networks
 
@@ -327,7 +333,12 @@ better log loss on a synthetic 30-dim task, +0.6 R² on Friedman #1) and hurts
 when the target has genuine discontinuities (california housing, digits). So
 it is off by default and worth a try when you believe the underlying function
 is smooth, or when you need continuous/differentiable predictions downstream.
-Soft inference costs roughly 3x hard inference (still milliseconds).
+Soft inference is markedly slower than hard routing, and the gap widens with
+row count: over 100 trees it measured 4.4x at 2K rows on CPU, 7.4x at 50K rows
+on GPU, and 57x at 50K rows on CPU (2.1 s), where hard routing takes the
+OpenMP C apply path and soft routing walks the nodes in Python over an
+`(n_rows, n_nodes)` probability matrix. Fine for interactive prediction, not
+for large batch scoring.
 
 ## Interaction-aware splits
 
@@ -379,9 +390,11 @@ clf.fit(X, y)
 print(clf.booster_.tuning_report_["selected"])  # which candidate won
 ```
 
-This is a bounded search (a handful of fits), not an open-ended sweep, and it
-is skipped automatically for datasets under 600 rows where a validation split
-is too noisy to trust. In our A/Bs it improves or matches the default
+This is a bounded search (a handful of fits), not an open-ended sweep. From 600
+rows up, candidates are scored on a single holdout; between 150 and 600 rows,
+where one split is too noisy to trust, they are scored by 3-fold
+cross-validation; under 150 rows (or fewer than 20 trees) tuning is skipped
+entirely and the parameters are left alone. In our A/Bs it improves or matches the default
 everywhere (california +0.4 R², synthetic 30-dim +1.3 accuracy points,
 friedman1/digits correctly left at the default) at a cost of roughly one fit
 per candidate. Pass your own `eval_set` and it tunes against that instead of
@@ -475,7 +488,7 @@ not apply to its shared-structure path.
 | `adaptive_features` | `False` | Learn feature importances during training and bias sampling toward them. |
 | `feature_importance_alpha` | `0.1` | EMA smoothing factor for the learned feature importances. |
 | `goss_enabled` | `False` | Gradient-based One-Side Sampling: keep large-gradient rows and subsample the rest. |
-| `goss_ratio` | `0.9` | Fraction of large-gradient rows retained when GOSS is enabled. |
+| `goss_ratio` | `0.9` | Total fraction of rows kept when GOSS is enabled: the top `1 - goss_ratio` by |gradient| is kept deterministically and the rest of the budget is sampled uniformly (0.9 = top 10% plus a random 80%). At 0.5 and below the random part vanishes and only the top-|gradient| rows are kept. |
 | **Interaction-aware growth** | | |
 | `detect_interactions` | `False` | Track which feature pairs interact during training. |
 | `interaction_aware` | `True` | Steer split selection toward features that interact with those already on the node's path. Only flips near-ties and never inflates the gain used to accept a split. On by default (A/B-verified on tabular data). |
@@ -501,7 +514,7 @@ not apply to its shared-structure path.
 | `leaf_net_lr` | `0.05` | Adam learning rate (MLP leaves only). |
 | `leaf_net_min_samples` | `50` | Leaves smaller than this keep their constant value. |
 | **Auto-tuning** | | |
-| `auto_tune` | `False` | Search curated hyperparameter candidates on a validation split before the final fit (skipped for datasets with < 600 rows). |
+| `auto_tune` | `False` | Search curated hyperparameter candidates before the final fit: scored on a single holdout at 600+ rows, by 3-fold CV between 150 and 600 rows, and skipped entirely below 150 rows or fewer than 20 trees. An `eval_set` passed to `fit` is scored on directly at any size. |
 | **Stochastic routing** | | |
 | `stochastic_routing` | `False` | Use soft (expected-path) routing at inference; trees are still grown and trained hard, but predictions become smooth in X. |
 | `routing_tau` | `0.05` | Gate width as a fraction of the split feature's scale. |
