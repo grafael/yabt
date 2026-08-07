@@ -82,9 +82,7 @@ def refine_tree_fast(
     # tree's own contribution; `margin` is the pre-tree margin.
     margin_np = margin_np + value_np[leaf_idx]
 
-    # Optimization loop
-    for step in range(params.refine_steps):
-        # Compute gradients of loss w.r.t. margin
+    for _ in range(params.refine_steps):
         if loss_fn.is_classification:
             margin_clipped = np.clip(margin_np, -500, 500)
             p = 1.0 / (1.0 + np.exp(-margin_clipped))

@@ -81,7 +81,7 @@ def _hist_sub(h_out, h_in, h_sub, sel):
 @njit(cache=True, fastmath=True)
 def _build_hist_sparse(indptr, indices, data, default_bin, grad, hess,
                        rows, start, end, out, expl_g, expl_h, expl_c, sel):
-    """Sparse (CSC-of-nonzeros) histogram for rows[start:end] into ``out``.
+    """Sparse (CSR-of-nonzeros) histogram for rows[start:end] into ``out``.
 
     Each feature has a *default bin* (its most common value, typically the
     binned zero of a sparse column). The CSR arrays ``indptr/indices/data`` store
@@ -467,7 +467,7 @@ def grow_tree_numba(
     Honors ``feature_mask`` and interaction steering; returns the same Tree
     output including per-split gate scales."""
     dev = binned.device
-    n, F = binned.shape
+    F = binned.shape[1]
     bn = np.ascontiguousarray(binned.detach().cpu().numpy())
     gn = grad.detach().cpu().numpy().astype(np.float32)
     hn = hess.detach().cpu().numpy().astype(np.float32)

@@ -15,6 +15,20 @@ from .multitask import MultiTaskBooster
 
 _PARAM_NAMES = [f.name for f in BoostParams.__dataclass_fields__.values()]
 
+# Estimator-only parameters (name -> default): they act on the encoding /
+# validation-split stage in front of the booster, not on BoostParams.
+_EXTRA_PARAMS = {
+    "cat_smoothing": 10.0,
+    "cat_per_class": False,
+    "cat_count_features": False,
+    "cat_combinations": 0,
+    "cat_combinations_min_card": 8,
+    "calibrate_multiclass": False,
+    "svd_features": 0,
+    "svd_min_features": 32,
+    "validation_fraction": 0.15,
+}
+
 # Parameter reference, rendered into each estimator's docstring so help()/IDEs
 # surface the hyperparameters (estimators take them through **kwargs, forwarded
 # to boosting.BoostParams). Single source of truth, grouped; keep in sync with
@@ -345,25 +359,14 @@ class _YABTBase(BaseEstimator):
         defaults = BoostParams()
         for name in _PARAM_NAMES:
             setattr(self, name, kwargs.pop(name, getattr(defaults, name)))
-        self.cat_smoothing = kwargs.pop("cat_smoothing", 10.0)
-        self.cat_per_class = kwargs.pop("cat_per_class", False)
-        self.cat_count_features = kwargs.pop("cat_count_features", False)
-        self.cat_combinations = kwargs.pop("cat_combinations", 0)
-        self.cat_combinations_min_card = kwargs.pop("cat_combinations_min_card", 8)
-        self.calibrate_multiclass = kwargs.pop("calibrate_multiclass", False)
-        self.svd_features = kwargs.pop("svd_features", 0)
-        self.svd_min_features = kwargs.pop("svd_min_features", 32)
-        self.validation_fraction = kwargs.pop("validation_fraction", 0.15)
+        for name, default in _EXTRA_PARAMS.items():
+            setattr(self, name, kwargs.pop(name, default))
         if kwargs:
             raise TypeError(f"Unknown parameters: {sorted(kwargs)}")
 
     @classmethod
     def _get_param_names(cls):
-        return sorted(_PARAM_NAMES + ["cat_smoothing", "cat_per_class",
-                                      "cat_count_features", "cat_combinations",
-                                      "cat_combinations_min_card",
-                                      "calibrate_multiclass", "svd_features",
-                                      "svd_min_features", "validation_fraction"])
+        return sorted(_PARAM_NAMES + list(_EXTRA_PARAMS))
 
     def _boost_params(self) -> BoostParams:
         return BoostParams(**{n: getattr(self, n) for n in _PARAM_NAMES})

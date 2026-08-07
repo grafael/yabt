@@ -51,7 +51,7 @@ def find_best_kernel_split(
     routing, and z_std is the spread of the kernel feature (the natural gate
     scale for soft routing).
     """
-    m, F = Xn.shape
+    m = Xn.shape[0]
     dev = Xn.device
     L = min(n_candidates, m)
     idx = torch.randperm(m, generator=gen)[:L].to(dev)

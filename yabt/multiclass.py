@@ -65,10 +65,6 @@ class MulticlassBooster:
         exp_margins = np.exp(margins - margins.max(axis=1, keepdims=True))
         return exp_margins / exp_margins.sum(axis=1, keepdims=True)
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Predicted class label per row."""
-        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
-
 
 class SoftmaxBooster:
     """Native softmax multiclass booster: K trees per round on joint gradients.
@@ -119,7 +115,7 @@ class SoftmaxBooster:
 
         # One engine for grower dispatch: its per-fit caches (sparse layout,
         # feature-major binned copy, C-grower probe) are shared by all K classes.
-        engine = self._engine = Booster(p, LogLoss())
+        engine = Booster(p, LogLoss())
         self.binner = engine.binner = Binner(max_bins=p.max_bins).fit(X)
         binned = self.binner.transform(X, device=dev)
         Xraw = torch.from_numpy(self.binner.impute(X)).to(dev)
@@ -242,7 +238,3 @@ class SoftmaxBooster:
         margins = self.predict_margin(X)
         exp_margins = np.exp(margins - margins.max(axis=1, keepdims=True))
         return exp_margins / exp_margins.sum(axis=1, keepdims=True)
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Predicted class label per row."""
-        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]

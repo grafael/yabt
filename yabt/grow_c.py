@@ -347,7 +347,7 @@ def grow_tree_c(
     binned_fmajor: np.ndarray | None = None,
 ) -> Tree:
     """Drop-in for the axis path of :func:`yabt.grow_numba.grow_tree_numba`,
-    grown by the OpenMP C kernel. ``n_threads<=0`` lets OpenMP pick (env).
+    grown by the OpenMP C kernel. ``n_threads<=0`` uses :func:`_auto_threads`.
 
     ``binned_fmajor`` optionally supplies the feature-major (F, n) uint8 layout
     of ``binned`` already built; the boosting loop reuses it across rounds (the

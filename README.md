@@ -401,7 +401,7 @@ clf = YABTClassifier(n_ensemble=4, subsample=0.9, colsample=0.9)
 ```
 
 On TabArena-Lite, `n_ensemble=4` is Elo 1289 against 1266 for a single fit
-(rank 32 vs 36), at about 3.9x the train time. A local A/B over 11 datasets
+(rank 33 vs 37), at about 3.9x the train time. A local A/B over 11 datasets
 agrees: median -1.4% metric error, better on 9 of 11. Off by default because
 of the cost, not the accuracy.
 
