@@ -109,9 +109,13 @@ def test_min_split_gain_rel_curbs_noise_overfit():
     X = rng.normal(size=(2000, 6)).astype(np.float32)
     y = rng.normal(size=2000).astype(np.float32)
     Xtr, ytr, Xte, yte = X[:1400], y[:1400], X[1400:], y[1400:]
-    base = YABTRegressor(n_estimators=100, max_leaves=31, refine_steps=0, seed=0).fit(Xtr, ytr)
-    reg = YABTRegressor(n_estimators=100, max_leaves=31, min_split_gain_rel=2.0,
-                        refine_steps=0, seed=0).fit(Xtr, ytr)
+    # small_data_caps off on both sides: at 1400 training rows it would cap the
+    # budget to 4 leaves, which is its own (much stronger) overfit cure and
+    # would hide what this test is about.
+    kw = dict(n_estimators=100, max_leaves=31, refine_steps=0, seed=0,
+              small_data_caps=False)
+    base = YABTRegressor(**kw).fit(Xtr, ytr)
+    reg = YABTRegressor(**kw, min_split_gain_rel=2.0).fit(Xtr, ytr)
     def r2(m):
         p = m.predict(Xte)
         return 1 - ((yte - p) ** 2).mean() / yte.var()

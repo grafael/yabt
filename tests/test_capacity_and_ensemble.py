@@ -11,7 +11,7 @@ from yabt.boosting import (
     BoostParams,
     MSELoss,
     SeedEnsemble,
-    _SMALL_N_MAX_DEPTH,
+    _SMALL_N_LEAF_NET_MIN,
     _SMALL_N_MAX_LEAVES,
     _SMALL_N_ROWS,
 )
@@ -27,27 +27,41 @@ def _tp(n, **kw):
 def test_caps_apply_only_below_the_row_threshold():
     small = _tp(_SMALL_N_ROWS - 1)
     assert small.max_leaves == _SMALL_N_MAX_LEAVES
-    assert small.max_depth == _SMALL_N_MAX_DEPTH
     big = _tp(_SMALL_N_ROWS)
     assert big.max_leaves == BoostParams().max_leaves
-    assert big.max_depth == BoostParams().max_depth
     # No row count (multi-task / direct callers) -> no caps.
     assert _tp(None).max_leaves == BoostParams().max_leaves
 
 
 def test_caps_never_inflate_a_smaller_budget():
-    tp = _tp(500, max_leaves=4, max_depth=2)
-    assert tp.max_leaves == 4 and tp.max_depth == 2
+    tp = _tp(500, max_leaves=4)
+    assert tp.max_leaves == 4
 
 
-def test_caps_are_off_by_default():
-    """Opt-in: across eight sub-2000-row datasets the caps are a median +0.36%
-    with a regression tail, so they ship as an auto_tune candidate, not a
-    default. Only the explicit flag turns them on."""
-    assert BoostParams().small_data_caps is False
+def test_caps_are_on_by_default_and_the_flag_turns_them_off():
+    """Default: 14 of 17 sub-2500-row TabArena tasks improve, median -3.97%
+    metric error, at 0.63x train time. The flag is the escape hatch."""
+    assert BoostParams().small_data_caps is True
     assert (Booster(BoostParams(), MSELoss())._tree_params(500).max_leaves
-            == BoostParams().max_leaves)
+            == _SMALL_N_MAX_LEAVES)
     assert _tp(500, small_data_caps=False).max_leaves == BoostParams().max_leaves
+
+
+def test_caps_bound_the_leaf_model_floor_too():
+    """The second half of the cap: with only 4 regions every leaf is large, so
+    the 50-row floor that keeps small leaves constant is miscalibrated."""
+    assert _tp(500).max_leaves == _SMALL_N_MAX_LEAVES
+    b = Booster(BoostParams(small_data_caps=True), MSELoss())
+    assert b.small_data_params(500).leaf_net_min_samples == _SMALL_N_LEAF_NET_MIN
+    assert (b.small_data_params(_SMALL_N_ROWS).leaf_net_min_samples
+            == BoostParams().leaf_net_min_samples)
+    # Lowering the floor *adds* capacity, so unlike max_leaves it is retuned
+    # only while it sits at its default -- an explicit setting is never
+    # overridden, in either direction.
+    for explicit in (5, 10 ** 9):
+        b = Booster(BoostParams(small_data_caps=True,
+                                leaf_net_min_samples=explicit), MSELoss())
+        assert b.small_data_params(500).leaf_net_min_samples == explicit
 
 
 def test_capped_model_still_trains_and_predicts():
@@ -100,7 +114,14 @@ def test_seed_ensemble_multiclass():
 
 def test_caps_offered_as_an_auto_tune_candidate_only_where_they_bind():
     names = [n for n, _ in _candidates(_SMALL_N_ROWS - 1)]
-    assert "small-data-caps" in names
+    assert "uncapped-small-data" in names
     # Above the threshold the caps do nothing, so the candidate would be a
     # bit-identical duplicate of user-config -- one wasted fit per tune.
-    assert "small-data-caps" not in [n for n, _ in _candidates(_SMALL_N_ROWS)]
+    assert "uncapped-small-data" not in [n for n, _ in _candidates(_SMALL_N_ROWS)]
+
+
+def test_half_budget_candidate_is_the_mirror_image():
+    """15 leaves is a weak-but-real win above the threshold (14/22 tasks) and a
+    duplicate of user-config below it, where the cap already binds to 4."""
+    assert "half-budget" in [n for n, _ in _candidates(_SMALL_N_ROWS)]
+    assert "half-budget" not in [n for n, _ in _candidates(_SMALL_N_ROWS - 1)]

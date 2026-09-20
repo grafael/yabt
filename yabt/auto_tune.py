@@ -41,20 +41,34 @@ def _candidates(n: int) -> list[tuple[str, dict]]:
         ("regularized-splits", {"min_split_gain_rel": 0.5}),
         ("regularized-splits-strong", {"min_split_gain_rel": 2.0, "max_leaves": 15}),
         ("fine-grain", {"min_samples_leaf": 5, "max_leaves": 63}),
-        # Small data: cap the tree budget to 16 leaves / depth 4. Worth a lot
-        # where it lands (qsar-biodeg -7.7%, credit-g -3.4%) and a real loss
-        # where it does not (climate-model-simulation-crashes +6.6%,
-        # airfoil_self_noise +5.2%), median only +0.36% over eight sub-2000-row
-        # datasets -- exactly the shape that belongs behind a validation gate
-        # rather than in the defaults.
-        ("small-data-caps", {"small_data_caps": True}),
+        # Half the default leaf budget. The capacity lever that dominates below
+        # _SMALL_N_ROWS decays with n but does not vanish: 15 leaves against the
+        # default 31 is 8/11 wins (median -0.35%) over the TabArena tasks with
+        # 2500 <= n < 9000 and 6/11 (median -0.17%) over 9000 <= n < 30000 --
+        # 14 of 22, a real but weak effect. It also gets *more expensive* as n
+        # grows, because a smaller budget means more trees before early stopping
+        # fires: 1.2x train time on the mid band and 1.84x on the large one. A
+        # weak win that costs 84% more compute is exactly what a per-dataset
+        # validation gate is for; shipping it blind is the mistake the old
+        # 16-leaf small-data cap made.
+        ("half-budget", {"max_leaves": 15}),
+        # Small data: the caps are now the default (see _SMALL_N_ROWS), so the
+        # candidate is the *escape hatch*. They win 14 of the 17 sub-2500-row
+        # TabArena tasks but lose on smooth regression targets that genuinely
+        # want the capacity (airfoil_self_noise +8.7%), which is exactly what a
+        # validation gate is for.
+        ("uncapped-small-data", {"small_data_caps": False}),
     ]
     if n < 5000:
         cands = [c for c in cands if c[0] != "fine-grain"]  # overfits small data
     if n >= _SMALL_N_ROWS:
         # The caps only bind below _SMALL_N_ROWS; above it this candidate is a
         # bit-identical duplicate of user-config, so it would just cost a fit.
-        cands = [c for c in cands if c[0] != "small-data-caps"]
+        cands = [c for c in cands if c[0] != "uncapped-small-data"]
+    else:
+        # Below _SMALL_N_ROWS the small-data cap binds max_leaves to 4, so a
+        # 15-leaf candidate is a duplicate of user-config -- one wasted fit.
+        cands = [c for c in cands if c[0] != "half-budget"]
     return cands
 
 

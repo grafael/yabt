@@ -62,14 +62,18 @@ _PARAM_GROUPS: list[list[tuple[str, str, str]]] = [
          "Column (feature) subsampling ratio per tree."),
         ("max_bins", "int, default=256",
          "Number of histogram bins used to discretize features."),
-        ("small_data_caps", "bool, default=False",
-         "Cap the tree budget to 16 leaves / depth 4 below 2000 rows, where the\n"
-         "default 31-leaf budget can overfit. Caps only, never inflations. Off by\n"
-         "default: across eight sub-2000-row datasets this is a median +0.36%\n"
-         "metric error with a real regression tail (climate-model +6.6%,\n"
-         "airfoil_self_noise +5.2%) even though it wins big where\n"
-         "it lands (qsar-biodeg -7.7%), so ``auto_tune`` offers it as a candidate\n"
-         "and deploys it only where a validation split says it helps."),
+        ("small_data_caps", "bool, default=True",
+         "Below 2500 rows, cap the tree budget to 4 leaves and the per-leaf\n"
+         "model floor to 20 rows, where the default 31-leaf budget overfits.\n"
+         "Caps only, never inflations -- but they do bind against an explicitly\n"
+         "larger ``max_leaves``, the same way ``refine_steps`` and\n"
+         "``interaction_aware`` are gated on row count. On by default: over the\n"
+         "17 sub-2500-row TabArena-Lite tasks, 14 improve at a median -3.97%\n"
+         "metric error and 0.63x train time. The tail is smooth regression\n"
+         "targets that want the capacity (airfoil_self_noise +8.7%) and small\n"
+         "multiclass (website_phishing +3.7%), so ``auto_tune`` offers the\n"
+         "uncapped config as a candidate and deploys it where a validation\n"
+         "split says it helps. Set False to disable."),
         ("n_ensemble", "int, default=1",
          "Fit this many boosters differing only in seed and average them. Pure\n"
          "variance reduction, so it does nothing unless training is stochastic\n"

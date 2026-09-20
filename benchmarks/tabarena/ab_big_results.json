@@ -1,0 +1,352 @@
+{
+ "baseline": {
+  "params": {
+   "n_estimators": 10000,
+   "early_stopping_rounds": 50,
+   "learning_rate": 0.05,
+   "subsample": 0.9,
+   "colsample": 0.9,
+   "cat_count_features": true,
+   "cat_combinations": 16,
+   "calibrate_multiclass": true,
+   "small_data_caps": false,
+   "device": "cuda"
+  },
+  "datasets": {
+   "Bank_Customer_Churn": {
+    "problem": "binary",
+    "errs": [
+     0.13386751870064806,
+     0.12600093448297678
+    ],
+    "err": 0.12993422659181242,
+    "s": 0.9791440963745117
+   },
+   "coil2000_insurance_policies": {
+    "problem": "binary",
+    "errs": [
+     0.26124532607156836,
+     0.23956995694572825
+    ],
+    "err": 0.2504076415086483,
+    "s": 0.6259044408798218
+   },
+   "E-CommereShippingData": {
+    "problem": "binary",
+    "errs": [
+     0.26122417068699755,
+     0.2591084535404087
+    ],
+    "err": 0.2601663121137031,
+    "s": 0.725875973701477
+   },
+   "heloc": {
+    "problem": "binary",
+    "errs": [
+     0.20730732974284272,
+     0.2009787707109485
+    ],
+    "err": 0.2041430502268956,
+    "s": 0.7102302312850952
+   },
+   "houses": {
+    "problem": "regression",
+    "errs": [
+     0.21770917688477065,
+     0.21267706107025047
+    ],
+    "err": 0.21519311897751056,
+    "s": 5.107778310775757
+   },
+   "HR_Analytics_Job_Change_of_Data_Scientists": {
+    "problem": "binary",
+    "errs": [
+     0.19081247916679767,
+     0.2063086474298903
+    ],
+    "err": 0.19856056329834398,
+    "s": 0.6026787757873535
+   },
+   "in_vehicle_coupon_recommendation": {
+    "problem": "binary",
+    "errs": [
+     0.29373786744315034,
+     0.2971829733381217
+    ],
+    "err": 0.295460420390636,
+    "s": 0.668704628944397
+   },
+   "miami_housing": {
+    "problem": "regression",
+    "errs": [
+     89452.70178144425,
+     89034.0037513758
+    ],
+    "err": 89243.35276641003,
+    "s": 4.353283882141113
+   },
+   "online_shoppers_intention": {
+    "problem": "binary",
+    "errs": [
+     0.07156622601680773,
+     0.06730863231987494
+    ],
+    "err": 0.06943742916834134,
+    "s": 0.5927536487579346
+   },
+   "superconductivity": {
+    "problem": "regression",
+    "errs": [
+     9.581844534845127,
+     9.807586800538532
+    ],
+    "err": 9.69471566769183,
+    "s": 6.097257018089294
+   },
+   "jm1": {
+    "problem": "binary",
+    "errs": [
+     0.25224065751909963,
+     0.2774528103475471
+    ],
+    "err": 0.26484673393332336,
+    "s": 0.6281247138977051
+   }
+  },
+  "total_s": 42.225969314575195
+ },
+ "leaves15": {
+  "params": {
+   "n_estimators": 10000,
+   "early_stopping_rounds": 50,
+   "learning_rate": 0.05,
+   "subsample": 0.9,
+   "colsample": 0.9,
+   "cat_count_features": true,
+   "cat_combinations": 16,
+   "calibrate_multiclass": true,
+   "small_data_caps": false,
+   "device": "cuda",
+   "max_leaves": 15
+  },
+  "datasets": {
+   "Bank_Customer_Churn": {
+    "problem": "binary",
+    "errs": [
+     0.1288612643496445,
+     0.12394440603174361
+    ],
+    "err": 0.12640283519069406,
+    "s": 1.3066035509109497
+   },
+   "coil2000_insurance_policies": {
+    "problem": "binary",
+    "errs": [
+     0.2525253787027091,
+     0.237999350438454
+    ],
+    "err": 0.24526236457058154,
+    "s": 0.8996278047561646
+   },
+   "E-CommereShippingData": {
+    "problem": "binary",
+    "errs": [
+     0.25717896374965554,
+     0.25482008519838795
+    ],
+    "err": 0.25599952447402174,
+    "s": 1.273364782333374
+   },
+   "heloc": {
+    "problem": "binary",
+    "errs": [
+     0.20612075387120377,
+     0.19936100740269758
+    ],
+    "err": 0.20274088063695067,
+    "s": 1.2073967456817627
+   },
+   "houses": {
+    "problem": "regression",
+    "errs": [
+     0.2205790618316694,
+     0.21408096498360096
+    ],
+    "err": 0.2173300134076352,
+    "s": 9.17694628238678
+   },
+   "HR_Analytics_Job_Change_of_Data_Scientists": {
+    "problem": "binary",
+    "errs": [
+     0.19369152290446812,
+     0.20356528156007392
+    ],
+    "err": 0.19862840223227102,
+    "s": 1.0803790092468262
+   },
+   "in_vehicle_coupon_recommendation": {
+    "problem": "binary",
+    "errs": [
+     0.2963075977172549,
+     0.29642444661068645
+    ],
+    "err": 0.2963660221639707,
+    "s": 1.6599293947219849
+   },
+   "miami_housing": {
+    "problem": "regression",
+    "errs": [
+     86907.6346473657,
+     86270.768537205
+    ],
+    "err": 86589.20159228536,
+    "s": 7.884237885475159
+   },
+   "online_shoppers_intention": {
+    "problem": "binary",
+    "errs": [
+     0.07112358472462088,
+     0.06750913343688791
+    ],
+    "err": 0.0693163590807544,
+    "s": 0.9452500343322754
+   },
+   "superconductivity": {
+    "problem": "regression",
+    "errs": [
+     9.716608627259411,
+     9.849780751223246
+    ],
+    "err": 9.783194689241329,
+    "s": 12.52232551574707
+   },
+   "jm1": {
+    "problem": "binary",
+    "errs": [
+     0.25398003848635886,
+     0.2771636258478365
+    ],
+    "err": 0.2655718321670977,
+    "s": 0.8868652582168579
+   }
+  },
+  "total_s": 77.72845387458801
+ },
+ "leaves8": {
+  "params": {
+   "n_estimators": 10000,
+   "early_stopping_rounds": 50,
+   "learning_rate": 0.05,
+   "subsample": 0.9,
+   "colsample": 0.9,
+   "cat_count_features": true,
+   "cat_combinations": 16,
+   "calibrate_multiclass": true,
+   "small_data_caps": false,
+   "device": "cuda",
+   "max_leaves": 8
+  },
+  "datasets": {
+   "Bank_Customer_Churn": {
+    "problem": "binary",
+    "errs": [
+     0.1276403484685854,
+     0.1258855114074624
+    ],
+    "err": 0.1267629299380239,
+    "s": 1.1472193002700806
+   },
+   "coil2000_insurance_policies": {
+    "problem": "binary",
+    "errs": [
+     0.26060825609380334,
+     0.22947343876216886
+    ],
+    "err": 0.2450408474279861,
+    "s": 0.6406296491622925
+   },
+   "E-CommereShippingData": {
+    "problem": "binary",
+    "errs": [
+     0.25445851920797313,
+     0.258066974987198
+    ],
+    "err": 0.25626274709758556,
+    "s": 0.6927531957626343
+   },
+   "heloc": {
+    "problem": "binary",
+    "errs": [
+     0.20383791373593407,
+     0.1982232470493257
+    ],
+    "err": 0.2010305803926299,
+    "s": 0.9099483489990234
+   },
+   "houses": {
+    "problem": "regression",
+    "errs": [
+     0.22377308773022359,
+     0.21831892317860352
+    ],
+    "err": 0.22104600545441355,
+    "s": 5.373906373977661
+   },
+   "HR_Analytics_Job_Change_of_Data_Scientists": {
+    "problem": "binary",
+    "errs": [
+     0.19256928153491715,
+     0.2044492513673919
+    ],
+    "err": 0.19850926645115452,
+    "s": 0.6407561302185059
+   },
+   "in_vehicle_coupon_recommendation": {
+    "problem": "binary",
+    "errs": [
+     0.2934179054645767,
+     0.3007145178116395
+    ],
+    "err": 0.2970662116381081,
+    "s": 1.1952595710754395
+   },
+   "miami_housing": {
+    "problem": "regression",
+    "errs": [
+     85182.6806809929,
+     86444.93053962158
+    ],
+    "err": 85813.80561030723,
+    "s": 6.57962965965271
+   },
+   "online_shoppers_intention": {
+    "problem": "binary",
+    "errs": [
+     0.07248319049325991,
+     0.06806130355597562
+    ],
+    "err": 0.07027224702461776,
+    "s": 0.6968950033187866
+   },
+   "superconductivity": {
+    "problem": "regression",
+    "errs": [
+     9.798768367056672,
+     9.920989133681429
+    ],
+    "err": 9.85987875036905,
+    "s": 13.76684296131134
+   },
+   "jm1": {
+    "problem": "binary",
+    "errs": [
+     0.2590027808681721,
+     0.2804875436454384
+    ],
+    "err": 0.2697451622568052,
+    "s": 0.5436266660690308
+   }
+  },
+  "total_s": 64.41809511184692
+ }
+}

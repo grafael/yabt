@@ -17,3 +17,6 @@ yabt/_cgrow/*
 benchmarks/tabarena/experiments/
 benchmarks/tabarena/eval/
 benchmarks/tabarena/*.log
+
+# A/B harness dataset caches (rebuilt from the OpenML cache on demand)
+benchmarks/tabarena/.*_cache.npz

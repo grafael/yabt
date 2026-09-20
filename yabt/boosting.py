@@ -23,23 +23,40 @@ from .adaptive_features import (
 # "on by default" flag is gated off below this row count.
 _INTERACTION_MIN_ROWS = 2000
 
-# Small-data tree budget, used by the ``small_data_caps`` opt-in. Below this row
-# count the default 31 leaves / unbounded depth is more capacity than the data
-# supports, and the small-data band is where the whole TabArena gap to CatBoost
-# lives (over the 15 smallest TabArena-Lite datasets YABT's median metric error
-# is 7.0% worse and it wins 3; over the 35 larger ones, +0.4% and 14 wins).
+# Small-data capacity caps, applied by ``small_data_caps``. The TabArena
+# leaderboard splits cleanly on dataset size: over the 33 tasks with n >= 2500
+# YABT's median rank is 30/78, over the 17 below it 51/78 -- the whole Elo gap
+# to CatBoost's default sits in that band, and it is an overfitting gap.
 #
-# But capping is NOT a safe default. On the three datasets that first suggested
-# it the win looked large (qsar-biodeg -7.7%, credit-g -3.4%, blood-transfusion
-# -2.1%); widening to eight sub-2000-row datasets collapses it to a median
-# +0.36% with a real regression tail (climate-model-simulation-crashes +6.6%,
-# airfoil_self_noise +5.2%) -- the original three were where the effect was
-# discovered, so they were the wrong place to measure it. Shipped instead as an
-# auto_tune candidate, deployed only where a validation split says it wins, the
-# same resolution min_split_gain_rel got for the same reason.
-_SMALL_N_ROWS = 2000
-_SMALL_N_MAX_LEAVES = 16
-_SMALL_N_MAX_DEPTH = 4
+# The cap used to be 16 leaves / depth 4, picked on eight datasets at one fold
+# each, where it was worth a median +0.36% (i.e. nothing), which is why it
+# shipped off. Re-measured over all 17 sub-2500-row TabArena tasks at six CV
+# splits each (benchmarks/tabarena/ab_smalldata.py, paired per split), the cap
+# was simply set far too loose:
+#
+#     leaves   16      8      6      5      4      3      2
+#     median  -0.68  -1.77  -2.21  -3.14  -3.81  -2.54  -1.83   (% metric error)
+#     wins/17   12     13     13     14     12     12     12
+#
+# 4 is the optimum and 2 has a bad tail (median -1.83% but mean +2.04%). The
+# depth cap is redundant once the leaf budget is this small, so it is gone.
+#
+# The second half of the cap is ``leaf_net_min_samples``: with only 4 regions
+# every leaf is large, so the 50-row floor that keeps small leaves constant is
+# miscalibrated here. Dropping it to 20 is the best measured config on the band
+# (-3.97% median, 14/17, 0.63x train time).
+#
+# Why capacity and not "less model" generally: disabling neural leaves
+# *regressed* the same band (+1.06% mean), a narrower per-leaf model (3 inputs
+# instead of 8) was worth only -0.88%, and min_samples_leaf / reg_lambda /
+# longer early-stopping patience barely moved it. The small-data winner is few
+# regions, each with a linear model inside -- not a coarser piecewise-constant
+# fit. Above the threshold the cap is wrong: over the 11 TabArena tasks with
+# 2500 <= n < 9000, 4 leaves is +0.07% and 8 leaves +0.45%, so the cap stops
+# at _SMALL_N_ROWS instead of ramping.
+_SMALL_N_ROWS = 2500
+_SMALL_N_MAX_LEAVES = 4
+_SMALL_N_LEAF_NET_MIN = 20
 
 
 class LogLoss:
@@ -214,11 +231,12 @@ class BoostParams:
     # loop does not support (kernel splits, GOSS, adaptive/product features,
     # refinement/refit, auto-tune, stochastic routing).
     multiclass: str = "softmax"
-    # Cap the tree budget to 16 leaves / depth 4 below 2000 rows (see
-    # _SMALL_N_ROWS). Caps only, never inflations. Off by default: across eight
-    # sub-2000-row datasets it is a median +0.36% with a regression tail, so it
-    # is offered as an auto_tune candidate rather than applied blind.
-    small_data_caps: bool = False
+    # Cap the tree budget to 4 leaves, and the per-leaf model floor to 20 rows,
+    # below 2500 rows (see _SMALL_N_ROWS). Caps only, never inflations. On by
+    # default: 14 of 17 sub-2500-row TabArena tasks improve, median -3.97%
+    # metric error at 0.63x train time. ``auto_tune`` offers the uncapped
+    # config as a candidate for the datasets that want the capacity back.
+    small_data_caps: bool = True
     # Seed ensembling: fit this many boosters differing only in seed and average
     # them. Pure variance reduction, so it only does something when training is
     # stochastic (subsample/colsample < 1) -- with both at 1.0 the members are
@@ -239,6 +257,11 @@ class BoostParams:
         if self.device == "auto":
             return "cuda" if torch.cuda.is_available() else "cpu"
         return self.device
+
+
+# Read off the dataclass so the "is it still the default?" test in
+# Booster.small_data_params cannot drift from the default itself.
+_DEFAULT_LEAF_NET_MIN = BoostParams.__dataclass_fields__["leaf_net_min_samples"].default
 
 
 class SeedEnsemble:
@@ -336,19 +359,39 @@ class Booster:
         self._sparse_decided = True
         return self._sparse_layout
 
-    def _tree_params(self, n: int | None = None) -> TreeParams:
+    def small_data_params(self, n: int) -> BoostParams:
+        """``self.params`` with the small-data caps applied for an ``n``-row fit.
+
+        Both knobs live here rather than in ``_tree_params`` because the
+        leaf-model floor is read straight off ``BoostParams`` by
+        ``fit_leaf_networks``; callers reassign ``self.p`` once and every
+        downstream read follows. Neither knob ever adds capacity -- see the
+        comment below for why they get there by different routes.
+        """
         p = self.p
-        max_leaves, max_depth = p.max_leaves, p.max_depth
-        # Small-data capacity caps (see _SMALL_N_ROWS). Caps, never inflations,
-        # matching how refine_steps is bounded for small data below.
-        if p.small_data_caps and n is not None and n < _SMALL_N_ROWS:
-            max_leaves = min(max_leaves, _SMALL_N_MAX_LEAVES)
-            max_depth = min(max_depth, _SMALL_N_MAX_DEPTH)
-            if p.verbose and (max_leaves, max_depth) != (p.max_leaves, p.max_depth):
-                print(f"[Auto-optimize] Dataset < {_SMALL_N_ROWS} rows: capping to "
-                      f"{max_leaves} leaves / depth {max_depth}")
+        if not p.small_data_caps or n >= _SMALL_N_ROWS:
+            return p
+        # max_leaves is a true cap: min() only ever removes capacity, so an
+        # already-smaller user budget wins. leaf_net_min_samples runs the other
+        # way -- *lowering* the floor makes more leaves eligible for a model --
+        # so min() there would override an explicit setting upward in capacity
+        # (leaf_net_min_samples=10**9 means "no leaf models", and must stay
+        # that way). It is retuned only while it sits at its default.
+        leaf_floor = p.leaf_net_min_samples
+        if leaf_floor == _DEFAULT_LEAF_NET_MIN:
+            leaf_floor = _SMALL_N_LEAF_NET_MIN
+        out = replace(p, max_leaves=min(p.max_leaves, _SMALL_N_MAX_LEAVES),
+                      leaf_net_min_samples=leaf_floor)
+        if p.verbose and out != p:
+            print(f"[Auto-optimize] Dataset < {_SMALL_N_ROWS} rows: capping to "
+                  f"{out.max_leaves} leaves, leaf models from "
+                  f"{out.leaf_net_min_samples} rows")
+        return out
+
+    def _tree_params(self, n: int | None = None) -> TreeParams:
+        p = self.p if n is None else self.small_data_params(n)
         return TreeParams(
-            max_leaves=max_leaves, max_depth=max_depth, reg_lambda=p.reg_lambda,
+            max_leaves=p.max_leaves, max_depth=p.max_depth, reg_lambda=p.reg_lambda,
             gamma=p.gamma, min_child_weight=p.min_child_weight,
             min_samples_leaf=p.min_samples_leaf, learning_rate=p.learning_rate,
             kernel_splits=p.kernel_splits, kernel_candidates=p.kernel_candidates,
@@ -521,6 +564,9 @@ class Booster:
             best_val, rounds_since_best = float("inf"), 0
 
         scales = self.binner.scales_.to(dev)
+        # Apply the small-data caps once, here, so the tree budget and the
+        # per-leaf model floor below both read the capped values.
+        p = self.p = self.small_data_params(n)
         tp = self._tree_params(n)
         Xn = Xraw / scales.clamp_min(1e-12) if p.kernel_splits else None
         kernel_ema_mode = p.kernel_splits and p.kernel_importance_weighting == "ema"
