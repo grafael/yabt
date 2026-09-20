@@ -154,6 +154,9 @@ class SoftmaxBooster:
         # ``top_interactions`` works here exactly as it does on ``Booster``.
         self.interaction_detector = engine.interaction_detector
 
+        # Small-data caps: one reassignment covers the leaf budget (via
+        # _tree_params) and the per-leaf model floor (read off p below).
+        p = self.params = engine.p = engine.small_data_params(n)
         tp = engine._tree_params(n)
         self.trees_ = [[] for _ in range(K)]
 

@@ -51,7 +51,7 @@ sections below have the details and the measured trade-offs.
 | Kernel splits | `kernel_splits` | off | non-linear RBF "blob" splits at a node |
 | Stochastic routing | `stochastic_routing` | off | smooth, probabilistic predictions |
 | Seed ensembling | `n_ensemble` | off (1) | average several seeds to cut variance |
-| Small-data caps | `small_data_caps` | off | cap the tree budget below 2000 rows |
+| Small-data caps | `small_data_caps` | **on** | cap the tree budget to 4 leaves below 2500 rows |
 | Auto-tuning | `auto_tune` | off | picks hyperparameters per dataset before fitting |
 | Adaptive features | `adaptive_features` | off | feature importance learned during training |
 | GOSS sampling | `goss_enabled` | off | keep big-error rows, subsample the rest |
@@ -113,6 +113,8 @@ X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.
 # The TabArena-winning recipe: a generous tree cap with early stopping on a
 # validation split, a conservative learning rate, and light row/column
 # subsampling. Neural leaves and interaction-aware splits are on by default.
+# breast_cancer is 569 rows, so small_data_caps also binds here: the trees get
+# 4 leaves rather than 31 (see "Where the remaining gap is: small data").
 clf = YABTClassifier(
     n_estimators=10_000,        # cap only; early stopping picks the count
     early_stopping_rounds=50,
@@ -212,8 +214,48 @@ default-config model.)
 
 Against CatBoost's default head-to-head, YABT wins 17 of 50 datasets with a
 median metric-error gap of +0.9% (regression +0.4%, binary +1.4%, multiclass
-+4.5%); the remaining Elo gap is concentrated in a small tail of
-small-or-noisy datasets where CatBoost's ordered boosting is strong.
++4.5%).
+
+### Where the remaining gap is: small data
+
+The Elo gap is not spread evenly. Ranking YABT against all 78 leaderboard
+methods on each dataset separately splits cleanly on dataset size:
+
+| band | datasets | YABT median rank |
+|---|--:|--:|
+| n ≥ 2500 | 33 | 30 / 78 |
+| n < 2500 | 17 | 51 / 78 |
+
+On the larger two-thirds of the benchmark YABT is already a top-40 method; the
+whole deficit is an overfitting gap on the small third. `small_data_caps`
+(on by default) is the response: over those 17 datasets at six CV splits each,
+capping to 4 leaves improves 14 of 17 at a median -3.97% metric error and
+0.63x train time. Replaying those per-dataset deltas through a local
+Bradley-Terry fit of the leaderboard (which reproduces the published Elo
+exactly) projects **Elo 1267 → ~1305, rank 37 → 30**.
+
+Treat that as an upper bound rather than a measurement: the A/B fits one model
+per split, while TabArena bags 8, and bagging is itself variance reduction, so
+it should absorb part of the same win. The number this table reports is still
+the un-capped 1267 until a full bagged run is done.
+
+The tail of the change is real and documented: smooth regression targets that
+genuinely want the capacity (airfoil_self_noise +8.7%) and small multiclass
+(website_phishing +3.7%). `auto_tune` offers the uncapped config as a
+candidate for exactly those. Per-dataset, 14 of the 17 have their optimum at 8
+leaves or fewer, and the best budget does not track the feature count
+(median 5.5 for ≤9 features against 4 for ≥13) — dataset size, not width, is
+what the cap keys on.
+
+Above the threshold the same lever keeps working but stops being worth it.
+Halving the budget to 15 leaves is 8/11 wins (median -0.35%) over the tasks
+with 2500 ≤ n < 9000 and 6/11 (median -0.17%) over 9000 ≤ n < 30000, and it
+gets steadily more expensive as n grows — a smaller budget means more trees
+before early stopping fires, so it costs 1.2x train time on the mid band and
+1.84x on the large one. A weak win at 84% more compute belongs behind a
+validation gate, so it ships as the `auto_tune` candidate `half-budget`
+rather than as a default. Deployed everywhere it wins, the projection would
+be Elo ~1328 / rank 27.
 
 ### CPU vs GPU, and the wide-data caveat
 
@@ -381,6 +423,14 @@ data, slower/deeper vs faster/shallower, stronger interaction boost). Each
 candidate is scored on a held-out split at the deployment tree count, and the
 winner is refit on all the data.
 
+The set is size-dependent, because the two leaf-budget candidates are mirror
+images of each other: below 2500 rows `small_data_caps` has already bound the
+budget to 4, so the candidate is `uncapped-small-data` (the escape hatch for
+the datasets that want the capacity back); above it the budget is the default
+31, so the candidate is `half-budget` (15 leaves). Each is a duplicate of
+`user-config` on the other side of the threshold and is dropped there rather
+than costing a fit.
+
 ```python
 clf = YABTClassifier(
     n_estimators=200,
@@ -475,7 +525,7 @@ not apply to its shared-structure path.
 | `subsample` | `1.0` | Row subsampling ratio drawn per tree. |
 | `colsample` | `1.0` | Column (feature) subsampling ratio per tree. |
 | `max_bins` | `256` | Number of histogram bins used to discretize features. |
-| `small_data_caps` | `False` | Cap the tree budget to 16 leaves / depth 4 below 2000 rows, where the default 31-leaf budget can overfit. Caps only, never inflations. Off by default: across eight sub-2000-row datasets this is a median +0.36% metric error with a real regression tail (climate-model +6.6%, airfoil_self_noise +5.2%) even though it wins big where it lands (qsar-biodeg -7.7%), so `auto_tune` offers it as a candidate and deploys it only where a validation split says it helps. |
+| `small_data_caps` | `True` | Below 2500 rows, cap the tree budget to 4 leaves and the per-leaf model floor to 20 rows, where the default 31-leaf budget overfits. Caps only, never inflations -- but they do bind against an explicitly larger `max_leaves`, the same way `refine_steps` and `interaction_aware` are gated on row count. On by default: over the 17 sub-2500-row TabArena-Lite tasks, 14 improve at a median -3.97% metric error and 0.63x train time. The tail is smooth regression targets that want the capacity (airfoil_self_noise +8.7%) and small multiclass (website_phishing +3.7%), so `auto_tune` offers the uncapped config as a candidate and deploys it where a validation split says it helps. Set False to disable. |
 | `n_ensemble` | `1` | Fit this many boosters differing only in seed and average them. Pure variance reduction, so it does nothing unless training is stochastic (`subsample`/`colsample` < 1). TabArena-Lite at 4: +22 Elo (1266 -> 1289) for ~3.9x the train time, hence opt-in. |
 | **Differentiable refinement** | | |
 | `refine_steps` | `0` | Gradient-descent refinement steps applied to splits and leaves after each tree (0 disables; effective steps adapt to dataset size). Off by default: costs ~10% of fit time for negligible gain on real tabular data. Opt in with `refine_steps > 0`. |

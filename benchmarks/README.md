@@ -16,6 +16,24 @@ foundation models. Everything lives under `tabarena/`.
 - **`run_tabarena.py`** — the benchmark runner. Results cache under
   `experiments/` (re-runs resume; delete a task dir to force a re-fit),
   leaderboard + plots under `eval/`.
+- **`ab_smalldata.py`** — the band-restricted A/B loop, for the sub-2500-row
+  datasets where YABT's leaderboard rank collapses (median 51/78 there against
+  30/78 above it). One fold cannot resolve a candidate on 748 rows, so this
+  fits every config on several outer CV splits per dataset and compares
+  candidates *paired* on the same splits. The row band, device, split count and
+  output tag are env-overridable (`YABT_AB_MIN_ROWS`, `YABT_AB_MAX_ROWS`,
+  `YABT_AB_DEVICE`, `YABT_AB_SPLITS`, `YABT_AB_TAG`), so the same script holds
+  the mid-size band on the GPU while the small band runs on the CPU:
+
+  ```bash
+  python benchmarks/tabarena/ab_smalldata.py baseline leaves4 caps_v2
+  python benchmarks/tabarena/ab_smalldata.py --report      # paired comparison
+  YABT_AB_MIN_ROWS=2500 YABT_AB_MAX_ROWS=9000 YABT_AB_DEVICE=cuda \
+    YABT_AB_TAG=mid4 YABT_AB_SPLITS=4 python benchmarks/tabarena/ab_smalldata.py baseline leaves15
+  ```
+
+  `ab_smalldata_results.json` / `ab_mid4_results.json` hold the measurements
+  behind the retuned `small_data_caps` default.
 - **`ab_tabarena_proxy.py`** — fast config A/B loop: single (unbagged) fold-0
   fits over all 51 datasets, ~2–3 min per config on a free GPU. Single-fit
   deltas under ±5% are seed noise — confirm candidates with multi-seed means
